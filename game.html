@@ -488,6 +488,12 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+/* OPT: shadow map autoUpdate=false. Sun position barely moves, so we only
+ * need to re-render the shadow map when the sun actually shifts. animate()
+ * flips `renderer.shadowMap.needsUpdate = true` every 4th frame (aligned
+ * with the sun re-targeting tick). This cuts shadow-render GPU cost ~75%. */
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;  /* render once on startup */
 /* When the browser-tab is hidden (alt-tab), pause rendering completely
  * so we don't waste battery / GPU. Also clear effect arrays to free RAM
  * for when the player comes back. */
@@ -1918,6 +1924,161 @@ function buildEquipBoard() {
   equipBoard._lights = scene.children.filter(o => o.isPointLight && o.position.distanceTo(
     new THREE.Vector3(equipBoard.cx, terrainHeight(equipBoard.cx, equipBoard.cz) + 1.5, equipBoard.cz + 0.45)) < 4);
   equipBoard._glowPlane = glowPlane;
+  /* Retain a reference to the board's top-level group so PvP can clone it
+   * for the second spawn (mirror at z=-141.5, facing +Z). */
+  equipBoard._meshGroup = g;
+}
+
+/* === Builds a DECORATIVE clone of the equipment board at (cx, cz) facing
+ * rotY. Used in PvP mode to give BOTH spawn points a board (player 2's
+ * spawn at z=-140 previously had no visible gear cache). No interaction
+ * slots or colliders — PvP auto-equips so the board is purely visual. */
+function mirrorEquipBoardAt(cx, cz, rotY) {
+  if (!equipBoard._meshGroup) return;
+  const clone = equipBoard._meshGroup.clone(true);
+  clone.position.set(cx, terrainHeight(cx, cz), cz);
+  clone.rotation.y = rotY;
+  scene.add(clone);
+  /* Add a thin backwall collider so the board blocks movement (otherwise
+   * it looks weird to walk through a wooden rack). */
+  const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  const dx = -0.15 * sinY, dz = 0.15 * cosY;
+  colliders.push({
+    minX: cx - Math.abs(2.6 * cosY) - Math.abs(dx), maxX: cx + Math.abs(2.6 * cosY) + Math.abs(dx),
+    minZ: cz - Math.abs(2.6 * sinY) - Math.abs(dz), maxZ: cz + Math.abs(2.6 * sinY) + Math.abs(dz)
+  });
+  /* Spotlight from above so the board is visible at night / in shadow */
+  const spot = new THREE.PointLight(0xffd070, 1.6, 9.0, 1.5);
+  spot.position.set(cx, terrainHeight(cx, cz) + 2.4, cz + 0.5 * cosY);
+  scene.add(spot);
+  return clone;
+}
+
+/* === Builds a non-enterable 3D cottage at (cx, cz). Pure decoration —
+ * walls, roof, door, windows. Adds colliders for each wall so players use
+ * it as hard cover. Used to populate the PvP arena with more sight breaks. */
+function addDecorativeHouse(cx, cz, rotY, variant) {
+  variant = variant || 0;
+  const g = new THREE.Group();
+  /* Alternate between 2 palettes so the 4 houses look distinct */
+  const palettes = [
+    { wall: 0xb59470, trim: 0x5a3a1c, roof: 0x6a2a1a },
+    { wall: 0x7a8a68, trim: 0x3a2a14, roof: 0x4a2814 }
+  ];
+  const pal = palettes[variant % palettes.length];
+  const wallMat = new THREE.MeshStandardMaterial({ map: woodTex, color: pal.wall, roughness: 0.88 });
+  const trimMat = new THREE.MeshStandardMaterial({ map: woodTex, color: pal.trim, roughness: 0.9 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: pal.roof, roughness: 0.85 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x4a6a88, roughness: 0.15, metalness: 0.2,
+    emissive: 0x203040, emissiveIntensity: 0.3, transparent: true, opacity: 0.7
+  });
+  const W = 5.5, D = 4.5, H = 2.8;
+  /* Four walls (solid boxes — door/window are overlaid decorative meshes) */
+  const front = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.2), wallMat);
+  front.position.set(0, H/2, -D/2); g.add(front);
+  const back  = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.2), wallMat);
+  back.position.set(0, H/2,  D/2); g.add(back);
+  const left  = new THREE.Mesh(new THREE.BoxGeometry(0.2, H, D), wallMat);
+  left.position.set(-W/2, H/2, 0); g.add(left);
+  const right = new THREE.Mesh(new THREE.BoxGeometry(0.2, H, D), wallMat);
+  right.position.set( W/2, H/2, 0); g.add(right);
+  /* Pitched roof (two tilted planes) */
+  const rp = new THREE.BoxGeometry(W + 0.5, 0.15, D/2 + 0.3);
+  const r1 = new THREE.Mesh(rp, roofMat);
+  r1.position.set(0, H + D/4 * 0.5, -D/4);
+  r1.rotation.x = -0.55;
+  g.add(r1);
+  const r2 = new THREE.Mesh(rp, roofMat);
+  r2.position.set(0, H + D/4 * 0.5,  D/4);
+  r2.rotation.x =  0.55;
+  g.add(r2);
+  /* Door on front (decorative, doesn't open) */
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.9, 0.08), trimMat);
+  door.position.set(-0.8, 0.95, -D/2 - 0.1);
+  g.add(door);
+  /* Two windows */
+  for (const sx of [1.4, 2.3]) {
+    const w = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.06), glassMat);
+    w.position.set(sx - 1.8, 1.7, -D/2 - 0.12); g.add(w);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.03), trimMat);
+    frame.position.set(sx - 1.8, 1.7, -D/2 - 0.10); g.add(frame);
+  }
+  /* Side window */
+  const sw = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.6, 0.7), glassMat);
+  sw.position.set(W/2 + 0.03, 1.7, 0); g.add(sw);
+  /* Chimney */
+  const ch = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), trimMat);
+  ch.position.set(W/4, H + 0.5, 0); g.add(ch);
+  /* Position and rotate */
+  g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
+  g.position.set(cx, terrainHeight(cx, cz), cz);
+  g.rotation.y = rotY || 0;
+  scene.add(g);
+  /* Collider: use a single AABB matching the footprint (rotation-aware:
+   * if rotY is 0 or PI, W spans X, D spans Z. If rotY is PI/2, they swap.) */
+  const yaw = ((rotY || 0) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+  const sideways = (Math.abs(yaw - Math.PI/2) < 0.1 || Math.abs(yaw - 3*Math.PI/2) < 0.1);
+  const halfX = (sideways ? D : W) / 2 + 0.15;
+  const halfZ = (sideways ? W : D) / 2 + 0.15;
+  colliders.push({
+    minX: cx - halfX, maxX: cx + halfX,
+    minZ: cz - halfZ, maxZ: cz + halfZ
+  });
+  return g;
+}
+
+/* === Builds a sandbag cluster for cover. Low wall of stacked bags
+ * (2 rows, ~3m wide) that players can duck behind. Cheap meshes, no
+ * dynamic lighting. */
+function addSandbagCluster(cx, cz, width, rotY) {
+  width = width || 3.0;
+  const g = new THREE.Group();
+  const sbMat = new THREE.MeshStandardMaterial({ map: concreteTex, color: 0x8a7a5a, roughness: 1 });
+  const n = Math.max(2, Math.floor(width / 0.9));
+  for (let row = 0; row < 2; row++) {
+    for (let i = 0; i < n; i++) {
+      const sb = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.42, 0.52), sbMat);
+      const offset = (row === 0) ? 0 : 0.44;
+      sb.position.set(-width/2 + offset + i * 0.88, 0.21 + row * 0.42, (row % 2) * 0.04);
+      g.add(sb);
+    }
+  }
+  g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
+  g.position.set(cx, terrainHeight(cx, cz), cz);
+  g.rotation.y = rotY || 0;
+  scene.add(g);
+  /* Rotation-aware AABB collider */
+  const cosY = Math.cos(rotY || 0), sinY = Math.sin(rotY || 0);
+  const halfX = Math.abs(width/2 * cosY) + Math.abs(0.5 * sinY);
+  const halfZ = Math.abs(width/2 * sinY) + Math.abs(0.5 * cosY);
+  colliders.push({
+    minX: cx - halfX, maxX: cx + halfX,
+    minZ: cz - halfZ, maxZ: cz + halfZ
+  });
+  return g;
+}
+
+/* === Builds a crate pile for cover. Random stack of 3-6 boxes. */
+function addCratePile(cx, cz, seed) {
+  seed = seed || 1;
+  const rng = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  const g = new THREE.Group();
+  const crMat1 = new THREE.MeshStandardMaterial({ map: woodTex, color: 0x8a5a2e, roughness: 0.9 });
+  const crMat2 = new THREE.MeshStandardMaterial({ map: woodTex, color: 0x6a4020, roughness: 0.9 });
+  const n = 3 + Math.floor(rng() * 4);
+  for (let i = 0; i < n; i++) {
+    const s = 0.8 + rng() * 0.3;
+    const cr = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), (i % 2) ? crMat1 : crMat2);
+    cr.position.set((rng() - 0.5) * 1.2, s/2 + (i > 2 ? s : 0), (rng() - 0.5) * 1.2);
+    cr.rotation.y = rng() * Math.PI;
+    g.add(cr);
+  }
+  g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
+  g.position.set(cx, terrainHeight(cx, cz), cz);
+  scene.add(g);
+  colliders.push({ minX: cx - 1.2, maxX: cx + 1.2, minZ: cz - 1.2, maxZ: cz + 1.2 });
+  return g;
 }
 
 /* Per-frame: gently pulse the equipment board lights + glow plane so the
@@ -3493,8 +3654,33 @@ function _makeSuppressorMesh() {
 const _supAk = _makeSuppressorMesh();
 _supAk.position.set(0, 0.018, -0.96);
 ak.add(_supAk);
-const _supM416 = _makeSuppressorMesh();
-_supM416.position.set(0, 0.018, -0.90);
+/* --- M416 dedicated suppressor (sized to fit the thinner M416 barrel 0.012
+ *     and the A2 flash hider at z=-0.73..-0.76). Previous version used the
+ *     generic AK-sized suppressor (radii 0.018/0.022) which looked like a
+ *     "crooked can" duct-taped onto the thin barrel. This one:
+ *       • radii 0.013 / 0.015   → only marginally wider than the barrel
+ *       • length 0.15           → proportional to the shorter M416 barrel
+ *       • positioned at z=-0.87 → butts up flush against the flash hider
+ *       • y=0.040               → exactly on the M416 barrel axis
+ */
+const _supM416 = (function() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.013, 0.015, 0.15, 16),
+    _supMat
+  );
+  body.rotation.x = Math.PI / 2;
+  g.add(body);
+  const r1 = new THREE.Mesh(new THREE.TorusGeometry(0.014, 0.0025, 8, 16), _supRingMat);
+  r1.position.z = -0.065;
+  g.add(r1);
+  const r2 = new THREE.Mesh(new THREE.TorusGeometry(0.014, 0.0025, 8, 16), _supRingMat);
+  r2.position.z =  0.065;
+  g.add(r2);
+  g.visible = false;
+  return g;
+})();
+_supM416.position.set(0, 0.040, -0.87);
 m416.add(_supM416);
 function _updateSuppressorVisual() {
   _supAk.visible = player.suppressorOn;
@@ -7595,11 +7781,30 @@ function tryThrowGrenade(kind) {
   v.y += 5.5;
   v.x += player.velocity.x * 0.3;
   v.z += player.velocity.z * 0.3;
+  const spin = (Math.random()-0.5)*8;
+  const fuse = (kind === 'frag' ? 3.4 : 1.4);
   grenades.push({
-    obj: mesh, vel: v, spin: (Math.random()-0.5)*8,
-    kind: kind, fuse: (kind === 'frag' ? 3.4 : 1.4),
+    obj: mesh, vel: v, spin: spin,
+    kind: kind, fuse: fuse,
     bounces: 0
   });
+  /* Hard cap — if someone (or a sync bug) floods grenades we drop the
+   * oldest one silently without detonating. Prevents unbounded growth. */
+  const MAX_GRENADES = 20;
+  while (grenades.length > MAX_GRENADES) {
+    const old = grenades.shift();
+    try { scene.remove(old.obj); _disposeObj(old.obj); } catch(_){}
+  }
+  /* PVP: notify opponent so they see the grenade flying in their world too.
+   * We send the initial position/velocity/fuse — each client then simulates
+   * identical physics on their end. Drift is acceptable (sub-second). */
+  if (typeof PVP_MODE !== 'undefined' && PVP_MODE && typeof _pvpOnGrenadeThrow === 'function') {
+    _pvpOnGrenadeThrow({
+      kind: kind, fuse: fuse, spin: spin,
+      ox: mesh.position.x, oy: mesh.position.y, oz: mesh.position.z,
+      vx: v.x, vy: v.y, vz: v.z
+    });
+  }
   /* Audio cue: foley clink for pin pull */
   if (typeof _foleyHit === 'function') {
     try { _foleyHit(audioCtx ? audioCtx.currentTime : 0,
@@ -8088,6 +8293,9 @@ function animate() {
     sun.target.position.copy(player.position);
     /* Atmospheric scattering — updates the sky gradient based on sun angle */
     if (typeof updateSkyGradient === 'function') updateSkyGradient();
+    /* OPT: re-render the shadow map now that the sun has moved. Paired
+     * with shadowMap.autoUpdate=false so frames 1-3 skip shadow work. */
+    renderer.shadowMap.needsUpdate = true;
   }
 
   renderer.render(scene, camera);
@@ -8121,6 +8329,50 @@ if (!PVP_MODE) showNotice('PRESS PLAY TO START');
    ======================================================================== */
 if (PVP_MODE) {
   showNotice('ПОДКЛЮЧЕНИЕ К СЕРВЕРУ...');
+
+  /* === PVP ARENA BUILD-OUT =================================================
+   * Player spawn at (8, 21) already has the equip board + cabin.
+   * Spawn 2 is at (0, -140) near the enemy base and previously had NO
+   * equipment cache. Add a mirror board facing the spawn, plus decorative
+   * 3D houses and cover scattered along the ~160-unit corridor so players
+   * have tactical options beyond "rush straight across the open field".
+   *
+   * All objects are static scene-additions; colliders are registered so
+   * they function as hard cover. Purely cosmetic — PvP auto-equips. */
+  try {
+    /* 1. Mirror equipment board at spawn 2, facing +Z (toward player 2) */
+    if (typeof mirrorEquipBoardAt === 'function') {
+      mirrorEquipBoardAt(0, -141.5, Math.PI);
+    }
+    /* 2. Four decorative houses placed off the main corridor so they break
+     *    long sight lines without walling off the whole arena. */
+    if (typeof addDecorativeHouse === 'function') {
+      addDecorativeHouse(-18,  -15, 0,          0);
+      addDecorativeHouse( 20,  -50, -0.3,       1);
+      addDecorativeHouse(-22,  -85, 0.5,        0);
+      addDecorativeHouse( 18, -115, Math.PI,    1);
+    }
+    /* 3. Sandbag clusters along the corridor for mid-range cover */
+    if (typeof addSandbagCluster === 'function') {
+      addSandbagCluster(  0,  -20, 3.5, 0);
+      addSandbagCluster( 10,  -45, 2.8, Math.PI/4);
+      addSandbagCluster(-12,  -60, 3.0, 0);
+      addSandbagCluster(  5,  -80, 2.5, -Math.PI/6);
+      addSandbagCluster(-10, -100, 3.2, Math.PI/3);
+      addSandbagCluster(  8, -125, 3.0, 0);
+    }
+    /* 4. Crate piles scattered — small hard cover for tactical peeks */
+    if (typeof addCratePile === 'function') {
+      addCratePile( -5, -30, 3);
+      addCratePile( 15, -70, 11);
+      addCratePile(-18, -95, 23);
+      addCratePile(  3, -55, 41);
+      addCratePile( -8, -110, 59);
+      addCratePile( 12, -135, 77);
+    }
+  } catch (e) {
+    console.warn('[pvp-arena] extra props failed:', e && e.message);
+  }
 
   /* --- PVP HUD --- */
   const pvpHud = document.createElement('div');
@@ -8195,15 +8447,36 @@ if (PVP_MODE) {
     const bootMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
     const bL = new THREE.Mesh(bootGeo, bootMat); bL.position.set(-0.13, 0.05, 0.04); g.add(bL);
     const bR = bL.clone(); bR.position.x = 0.13; g.add(bR);
-    /* Rifle */
-    const rifle = new THREE.Group();
-    rifle.add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.7),
-      new THREE.MeshStandardMaterial({ color: 0x2a2a2e, roughness: 0.5, metalness: 0.7 })));
-    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.18),
-      new THREE.MeshStandardMaterial({ color: 0x6a4525, roughness: 0.8 }));
-    stock.position.z = 0.4; rifle.add(stock);
-    rifle.position.set(0.3, 1.05, -0.25); rifle.rotation.y = -0.2;
-    g.add(rifle);
+    /* Rifle holder — we swap between AK / M416 full models based on
+     * opponent_state.w. The holder group handles positioning+rotation so the
+     * child weapon mesh stays consistent regardless of which rifle is active. */
+    const rifleHolder = new THREE.Group();
+    /* Orient the weapon so its barrel (local -Z) points forward of the
+     * opponent body (also -Z after lookAt), slung at hip-carry height. */
+    rifleHolder.position.set(0.28, 1.08, -0.05);
+    rifleHolder.rotation.y = 0;
+    g.add(rifleHolder);
+    /* Two actual weapon models — built once, toggled visible per-state */
+    const oppAk   = createAK47();
+    const oppM416 = createM416();
+    /* Scale up slightly so it's readable at combat distance */
+    oppAk.scale.setScalar(1.4);
+    oppM416.scale.setScalar(1.4);
+    /* Hide both initially; _pvpUpdate flips the correct one on */
+    oppAk.visible = false;
+    oppM416.visible = false;
+    rifleHolder.add(oppAk);
+    rifleHolder.add(oppM416);
+    /* Opponent muzzle flash sprite — parented to the holder so it inherits
+     * position/rotation. Opacity ramps in _pvpRenderOpponentShot. */
+    const oppFlashMat = new THREE.SpriteMaterial({
+      color: 0xffd06a, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+    const oppFlash = new THREE.Sprite(oppFlashMat);
+    oppFlash.scale.set(0.6, 0.6, 0.6);
+    oppFlash.position.set(0, 0.05, -1.1); /* slightly ahead of rifle */
+    rifleHolder.add(oppFlash);
     /* Health bar */
     const hbBg = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.08),
       new THREE.MeshBasicMaterial({ color: 0x222222 }));
@@ -8230,7 +8503,9 @@ if (PVP_MODE) {
 
     _pvpOpp = {
       obj: g, head, torso, vest, helmet, armL, armR,
-      legL, legR, hbBg, hbFg, label, rifle,
+      legL, legR, hbBg, hbFg, label,
+      rifleHolder, oppAk, oppM416, oppFlash, oppFlashMat,
+      currentWeapon: 'ak',
       health: 100, maxHealth: 100
     };
     _pvpOppModel = g;
@@ -8314,6 +8589,29 @@ if (PVP_MODE) {
     }
     else if (msg.type === 'opponent_shot') {
       pvpRenderOpponentShot(msg);
+    }
+    else if (msg.type === 'opponent_grenade') {
+      /* Spawn a grenade at the reported origin with reported velocity so the
+       * local simulation matches the thrower's. Physics drift is acceptable
+       * since both clients use the same gravity/damping constants. */
+      try {
+        const mesh = (msg.kind === 'frag') ? _buildFragMesh() : _buildSmokeCanMesh();
+        mesh.position.set(msg.ox, msg.oy, msg.oz);
+        scene.add(mesh);
+        grenades.push({
+          obj: mesh,
+          vel: new THREE.Vector3(msg.vx, msg.vy, msg.vz),
+          spin: msg.spin || 0,
+          kind: msg.kind,
+          fuse: msg.fuse || (msg.kind === 'frag' ? 3.4 : 1.4),
+          bounces: 0,
+          /* tag so local damage checks can skip (opponent's frag is synced via
+           * server 'hit' from them, we don't want double-damage here). Keep
+           * visual/audio only: detonateFrag will still play FX but the direct
+           * damage check in it harmlessly checks player distance. */
+          remote: true
+        });
+      } catch(_){}
     }
     else if (msg.type === 'took_damage') {
       const dmg = msg.damage || 15;
@@ -8410,13 +8708,55 @@ if (PVP_MODE) {
     });
   }
 
-  /* Render opponent shot: muzzle flash + sound */
+  /* Render opponent shot: muzzle flash on opponent rifle + tracer that flies
+   * along the reported direction + stereo-localized gunshot sound + whip-by
+   * sound if the bullet flight path passes within ~1.5m of the player. This
+   * gives full audio/visual parity with a bot shooting at you. */
   function pvpRenderOpponentShot(msg) {
     if (!_pvpOppModel || _pvpOppDead) return;
     const oppPos = _pvpOppModel.position;
     const dist = oppPos.distanceTo(player.position);
+    /* Muzzle flash on opponent's rifle (ramps opacity briefly) */
+    if (_pvpOpp.oppFlashMat) {
+      _pvpOpp.oppFlashMat.opacity = 1.0;
+      setTimeout(() => {
+        if (_pvpOpp && _pvpOpp.oppFlashMat) _pvpOpp.oppFlashMat.opacity = 0;
+      }, 55);
+    }
+    /* Audio: stereo-localized gunshot, attenuated by distance */
     if (typeof playEnemyShot === 'function') {
       playEnemyShot(dist, oppPos);
+    }
+    /* Tracer visualization — draw from muzzle world position along dir for ~80m */
+    if (msg.ox !== undefined && msg.dx !== undefined && typeof spawnTracer === 'function') {
+      const from = new THREE.Vector3(msg.ox, msg.oy, msg.oz);
+      const dir  = new THREE.Vector3(msg.dx, msg.dy, msg.dz);
+      if (dir.lengthSq() > 0.0001) {
+        dir.normalize();
+        const to = from.clone().addScaledVector(dir, 80);
+        try { spawnTracer(from, to); } catch(_){}
+        /* Whip-by: if the flight path passes within 1.5m of the camera, play
+         * a short whip sound. Compute closest approach analytically. */
+        const cam = player.position;
+        const toCam = cam.clone().sub(from);
+        const tClosest = Math.max(0, Math.min(80, toCam.dot(dir)));
+        const closestPt = from.clone().addScaledVector(dir, tClosest);
+        const minD = closestPt.distanceTo(cam);
+        if (minD < 1.8 && audioCtx) {
+          try {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.type = 'sawtooth';
+            const now = audioCtx.currentTime;
+            o.frequency.setValueAtTime(2600, now);
+            o.frequency.exponentialRampToValueAtTime(900, now + 0.08);
+            g.gain.setValueAtTime(0.25 * (1 - minD / 1.8), now);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start(now); o.stop(now + 0.1);
+          } catch(_){}
+        }
+      }
     }
   }
 
@@ -8453,10 +8793,30 @@ if (PVP_MODE) {
       _pvpOpp.label.lookAt(camera.position);
     }
 
+    /* Swap opponent's visible rifle model based on their active weapon (r.w).
+     * Only toggle when changed to avoid thrashing the scene graph. */
+    if (r.w && r.w !== _pvpOpp.currentWeapon) {
+      _pvpOpp.currentWeapon = r.w;
+      if (_pvpOpp.oppAk)   _pvpOpp.oppAk.visible   = (r.w === 'ak');
+      if (_pvpOpp.oppM416) _pvpOpp.oppM416.visible = (r.w === 'm416');
+    } else if (r.w && !_pvpOpp.oppAk.visible && !_pvpOpp.oppM416.visible) {
+      /* First state packet — make the default weapon visible */
+      if (_pvpOpp.oppAk)   _pvpOpp.oppAk.visible   = (r.w === 'ak');
+      if (_pvpOpp.oppM416) _pvpOpp.oppM416.visible = (r.w === 'm416');
+    }
+
     /* Hide opponent if dead */
     if (_pvpOppDead) {
       _pvpOppModel.position.y = -100;
     }
+  };
+
+  /* --- PVP GRENADE THROW (outbound) ---
+   * Called from tryThrowGrenade when the local player throws. We forward
+   * the initial trajectory so the opponent's client can spawn an identical
+   * grenade + run the same physics (frag radius, smoke cloud) locally. */
+  window._pvpOnGrenadeThrow = function(data) {
+    pvpSend({ type: 'grenade_throw', ...data });
   };
 
   /* --- PVP BULLET HIT DETECTION --- */

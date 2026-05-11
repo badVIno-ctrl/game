@@ -821,6 +821,29 @@ if (typeof PVP_MODE !== 'undefined' && PVP_MODE) {
   TRENCH_RECTS.push({ cx:  10, cz: -125, halfX: 1.2, halfZ: 3.0, rotY: 0.0,          depth: 1.0 });
 }
 
+/* === Hand-placed hills and craters — added on top of the procedural base
+ * to give the map clear tactical landmarks (a hill = high ground; a crater
+ * = ducked cover). Each entry: {cx, cz, r, amp} where:
+ *   r   — radius in metres (height falls off via cosine smooth-step)
+ *   amp — positive = HILL (rise), negative = CRATER (depression) */
+const TERRAIN_BUMPS = [
+  /* PvE-side hills — give the player elevated firing positions */
+  { cx:  35, cz:   5,  r: 14, amp:  3.2 },
+  { cx: -30, cz: -10,  r: 16, amp:  2.6 },
+  { cx:  10, cz: -35,  r: 12, amp:  2.4 },
+  { cx: -40, cz: -55,  r: 18, amp:  3.0 },
+  /* Mid-field crater + sniper mound */
+  { cx:  -2, cz: -65,  r: 10, amp: -1.6 },
+  { cx:  28, cz: -85,  r: 14, amp:  2.8 },
+  /* Enemy-base side */
+  { cx: -30, cz: -120, r: 16, amp:  2.4 },
+  { cx:  20, cz: -130, r: 10, amp: -1.4 },
+  { cx:   0, cz:  -95, r: 12, amp: -1.2 },
+  /* Side flanks — encourages off-corridor pushes */
+  { cx:  45, cz: -45,  r: 14, amp:  2.0 },
+  { cx: -45, cz: -85,  r: 12, amp:  1.8 },
+];
+
 function terrainHeight(x, z) {
   /* Larger rolling hills + medium ridges + small bumps for visual relief */
   const big   = Math.sin(x * 0.018) * Math.cos(z * 0.022) * 2.4;
@@ -831,6 +854,17 @@ function terrainHeight(x, z) {
   const r = Math.hypot(x, z);
   const edge = r > 140 ? (r - 140) * 0.08 : 0;
   let h = big + med + small + tiny - edge;
+  /* Hand-placed hills / craters with cosine smooth-step falloff */
+  for (let i = 0; i < TERRAIN_BUMPS.length; i++) {
+    const b = TERRAIN_BUMPS[i];
+    const dx = x - b.cx, dz = z - b.cz;
+    const d = Math.sqrt(dx*dx + dz*dz);
+    if (d < b.r) {
+      /* Cosine falloff: full at center, 0 at edge */
+      const t = 0.5 + 0.5 * Math.cos(Math.PI * d / b.r);
+      h += b.amp * t;
+    }
+  }
   /* Trench depressions: subtract depth*falloff where inside a trench rect.
    * Falloff is linear over the last 0.9m of each edge so the player can
    * walk in/out via a gentle ramp on all four sides (no cliffs). */
@@ -931,7 +965,9 @@ for (let i = 0; i < 70; i++) {
     tz = (Math.random() - 0.5) * 180;
   } while (Math.hypot(tx, tz) < 12); /* keep player spawn clear */
   const t = createTree(tx, tz);
-  trees.push({ obj: t, x: tx, z: tz, r: 0.6 });
+  /* Trunk collision radius reduced 0.6 → 0.32 to match the visible trunk
+   * mesh — was causing "invisible cylinder" feel around every tree. */
+  trees.push({ obj: t, x: tx, z: tz, r: 0.32 });
   scene.add(t);
 }
 
@@ -974,7 +1010,9 @@ function addRock(x, z) {
   mesh.castShadow = true; mesh.receiveShadow = true;
   scene.add(mesh);
   obstacles.push(mesh);
-  colliders.push({ minX: x - 0.7, maxX: x + 0.7, minZ: z - 0.7, maxZ: z + 0.7, obj: mesh });
+  /* Tighter rock collider (was 0.7) so the player can squeeze past rocks
+   * that sit close to vehicles/walls. Visual mesh is unchanged. */
+  colliders.push({ minX: x - 0.5, maxX: x + 0.5, minZ: z - 0.5, maxZ: z + 0.5, obj: mesh });
 }
 
 function addSandbagWall(cx, cz, dir = 0, count = 4) {
@@ -992,7 +1030,10 @@ function addSandbagWall(cx, cz, dir = 0, count = 4) {
       scene.add(mesh);
       obstacles.push(mesh);
     }
-    colliders.push({ minX: x-0.45, maxX: x+0.45, minZ: z-0.3, maxZ: z+0.3 });
+    /* Two-layer sandbag wall = 0.64m total height → JUMPABLE.
+     * Set maxY so player can step on top instead of getting blocked. */
+    colliders.push({ minX: x-0.45, maxX: x+0.45, minZ: z-0.3, maxZ: z+0.3,
+                     maxY: terrainHeight(x, z) + 0.64 });
   }
 }
 
@@ -1043,7 +1084,9 @@ function addJerseyBarrier(x, z, rot = 0) {
   const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
   const aw = 0.25*cos + 0.8*sin;
   const ad = 0.25*sin + 0.8*cos;
-  colliders.push({ minX: x-aw, maxX: x+aw, minZ: z-ad, maxZ: z+ad });
+  /* Jersey barrier is 1.0m tall → JUMPABLE (player jump apex ~1.1m). */
+  colliders.push({ minX: x-aw, maxX: x+aw, minZ: z-ad, maxZ: z+ad,
+                   maxY: terrainHeight(x, z) + 1.00 });
 }
 
 /* Concrete wall with damaged top */
@@ -1105,8 +1148,10 @@ function addDestroyedTank(x, z, rot = 0) {
   g.rotation.y = rot;
   scene.add(g);
   const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
-  const aw = 1.5*cos + 2.6*sin;
-  const ad = 1.5*sin + 2.6*cos;
+  /* Tank collider tightened (was 1.5 × 2.6) so player isn't trapped between
+   * a tank and an adjacent rock/obstacle. Visual mesh is unchanged. */
+  const aw = 1.3*cos + 2.35*sin;
+  const ad = 1.3*sin + 2.35*cos;
   colliders.push({ minX: x-aw, maxX: x+aw, minZ: z-ad, maxZ: z+ad });
 }
 
@@ -1190,7 +1235,9 @@ function addTrench(cx, cz, length = 8, dir = 0) {
       sb.castShadow = sb.receiveShadow = true;
       scene.add(sb); obstacles.push(sb);
     }
-    colliders.push({ minX: wx-0.5, maxX: wx+0.5, minZ: wz-0.35, maxZ: wz+0.35 });
+    /* Trench-rim sandbag stack: 2 rows ≈ 0.6m → JUMPABLE. */
+    colliders.push({ minX: wx-0.5, maxX: wx+0.5, minZ: wz-0.35, maxZ: wz+0.35,
+                     maxY: terrainHeight(wx, wz) + 0.60 });
   }
   /* Wood plank revetment on the trench wall (back side) */
   for (let i = 0; i < sbCount; i++) {
@@ -1287,8 +1334,9 @@ function addWreckedTruck(cx, cz, dir = 0) {
   g.rotation.y = dir;
   scene.add(g);
   const cos = Math.abs(Math.cos(dir)), sin = Math.abs(Math.sin(dir));
-  const aw = 1.3*cos + 3.0*sin;
-  const ad = 1.3*sin + 3.0*cos;
+  /* Truck collider tightened (was 1.3 × 3.0). Visual mesh is unchanged. */
+  const aw = 1.15*cos + 2.65*sin;
+  const ad = 1.15*sin + 2.65*cos;
   colliders.push({ minX: cx-aw, maxX: cx+aw, minZ: cz-ad, maxZ: cz+ad });
 }
 
@@ -1308,7 +1356,10 @@ function addCrateStack(cx, cz) {
     mesh.castShadow = true; mesh.receiveShadow = true;
     scene.add(mesh); obstacles.push(mesh);
     const half = p.s * 0.55;
-    colliders.push({ minX: mesh.position.x - half, maxX: mesh.position.x + half, minZ: mesh.position.z - half, maxZ: mesh.position.z + half, obj: mesh });
+    /* Cluster crate (scale p.s, max ~1m tall) → JUMPABLE. */
+    colliders.push({ minX: mesh.position.x - half, maxX: mesh.position.x + half,
+                     minZ: mesh.position.z - half, maxZ: mesh.position.z + half,
+                     maxY: mesh.position.y + p.s * 0.5, obj: mesh });
   });
 }
 
@@ -1691,8 +1742,10 @@ function addSpawnCabin(cx, cz) {
   colliders.push({ minX: cx - W/2 - 0.25, maxX: cx - W/2 + 0.25, minZ: cz - D/2 + 0.0, maxZ: cz + D/2 - 0.7 });
   /* Right wall */
   colliders.push({ minX: cx + W/2 - 0.25, maxX: cx + W/2 + 0.25, minZ: cz - D/2 + 0.0, maxZ: cz + D/2 - 0.7 });
-  /* Sandbag pile */
-  colliders.push({ minX: cx - 1.5, maxX: cx + 1.5, minZ: cz - D/2 - 0.95, maxZ: cz - D/2 - 0.25 });
+  /* Sandbag pile next to cabin door (~0.5m tall) → JUMPABLE. */
+  colliders.push({ minX: cx - 1.5, maxX: cx + 1.5,
+                   minZ: cz - D/2 - 0.95, maxZ: cz - D/2 - 0.25,
+                   maxY: terrainHeight(cx, cz - D/2 - 0.6) + 0.50 });
 }
 /* Cabin sits north of (0,0); player spawns just south of it (z=18 is south of cabin at z=16). */
 addSpawnCabin(8, 16);
@@ -1863,7 +1916,8 @@ function buildEquipBoard() {
     { x: -1.6, y: 0.6, kind: 'red_dot',  label: 'КОЛЛИМАТОР' },
     { x:  0.0, y: 0.6, kind: 'scope_3x', label: 'ПРИЦЕЛ 3X' },
     { x:  1.6, y: 0.6, kind: 'medkit',   label: 'АПТЕЧКИ x2' },
-    { x:  2.4, y: 0.6, kind: 'suppressor', label: 'ГЛУШИТЕЛЬ (O)' }
+    { x:  2.4, y: 0.6, kind: 'suppressor', label: 'ГЛУШИТЕЛЬ (O)' },
+    { x: -2.4, y: 0.6, kind: 'flashlight', label: 'ФОНАРИК (L)' }
   ];
   const tinyOpticOffset = 0.30;     /* push optics out from board so they're visible */
   for (const def of SLOT_DEFS) {
@@ -1941,6 +1995,32 @@ function buildEquipBoard() {
       const ring2 = ring1.clone();
       ring2.position.x = -0.10;
       item.add(ring2);
+      item.position.set(def.x, def.y, 0.18);
+    } else if (def.kind === 'flashlight') {
+      /* Mini flashlight display — black body + glowing lens. */
+      item = new THREE.Group();
+      const flBody = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.030, 0.034, 0.22, 16),
+        new THREE.MeshStandardMaterial({ color: 0x161618, roughness: 0.35, metalness: 0.85 })
+      );
+      flBody.rotation.z = Math.PI / 2;
+      item.add(flBody);
+      /* Front bezel (slightly bigger, matte) */
+      const flBezel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.038, 0.038, 0.022, 16),
+        new THREE.MeshStandardMaterial({ color: 0x2a2a2e, roughness: 0.5, metalness: 0.8 })
+      );
+      flBezel.rotation.z = Math.PI / 2;
+      flBezel.position.x = 0.108;
+      item.add(flBezel);
+      /* Lens — emissive so it reads as "on" even in the cabin shadow */
+      const flLens = new THREE.Mesh(
+        new THREE.CircleGeometry(0.030, 16),
+        new THREE.MeshBasicMaterial({ color: 0xfff2c0 })
+      );
+      flLens.position.set(0.120, 0, 0);
+      flLens.rotation.y = Math.PI / 2;
+      item.add(flLens);
       item.position.set(def.x, def.y, 0.18);
     }
     if (item) g.add(item);
@@ -3705,6 +3785,90 @@ weapon.rotation.set(0, 0, 0);
 camera.add(weapon);
 scene.add(camera);
 
+/* === FLASHLIGHT (mounted under barrel) ===================================
+ *  A single SpotLight is the actual light source. It is parented to the
+ *  camera (not the weapon) so the cone tracks exactly where the player
+ *  looks — feels predictable and "video-gamey" in the best sense. The
+ *  visible flashlight BODY MESH is added to each weapon group so it
+ *  rides under the barrel and bobs with the gun.
+ *
+ *  The light is initially OFF; `_updateFlashlightVisual()` flips intensity
+ *  / mesh.visible based on `player.inv.hasFlashlight` and
+ *  `player.flashlightOn`. Toggle key is `L`.
+ * ======================================================================= */
+const flashlight = new THREE.SpotLight(
+  0xffe8c4,   /* warm-white tungsten color */
+  0.0,        /* intensity (0 = off; we ramp to 4 when on) */
+  140,        /* range in metres (4× the original 35m per user request) */
+  Math.PI / 7,/* outer half-angle ≈ 25.7° */
+  0.45,       /* penumbra: soft edge */
+  1.1         /* decay — softer falloff so 140m range is actually visible */
+);
+flashlight.position.set(0.18, -0.18, -0.45);   /* under-barrel, forward of camera */
+flashlight.castShadow = false;                 /* perf — no shadow map for handheld */
+const flashlightTarget = new THREE.Object3D();
+flashlightTarget.position.set(0.18, -0.18, -50); /* aim straight along view */
+camera.add(flashlight);
+camera.add(flashlightTarget);
+flashlight.target = flashlightTarget;
+
+/* Under-barrel flashlight body — visible black cylinder + emissive lens.
+ * We build TWO copies, one for each weapon's local space, so it follows
+ * the gun's bob/recoil/ADS animations naturally. */
+function _buildUnderBarrelFlashlight() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.022, 0.024, 0.13, 14),
+    new THREE.MeshStandardMaterial({ color: 0x101012, roughness: 0.4, metalness: 0.8 })
+  );
+  body.rotation.x = Math.PI / 2;
+  g.add(body);
+  /* Bezel ring */
+  const bezel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.028, 0.028, 0.018, 14),
+    new THREE.MeshStandardMaterial({ color: 0x222226, roughness: 0.5, metalness: 0.7 })
+  );
+  bezel.rotation.x = Math.PI / 2;
+  bezel.position.z = -0.064;
+  g.add(bezel);
+  /* Lens — emissive when ON, dim when OFF (we mutate emissiveIntensity) */
+  const lensMat = new THREE.MeshStandardMaterial({
+    color: 0xfff2c0, emissive: 0xfff2c0, emissiveIntensity: 0.0, roughness: 0.2
+  });
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.022, 14), lensMat);
+  lens.position.z = -0.073;
+  lens.rotation.y = Math.PI;     /* face forward (-Z) */
+  g.add(lens);
+  g.userData.lensMat = lensMat;
+  g.visible = false;             /* hidden until picked up */
+  return g;
+}
+const flashlightAk   = _buildUnderBarrelFlashlight();
+const flashlightM416 = _buildUnderBarrelFlashlight();
+/* Mount points under each weapon's barrel.
+ *  AK   muzzle ≈ z=-0.83 in weapon-local — place light at z=-0.55, y=-0.06
+ *  M416 muzzle ≈ z=-0.78 — slightly lower for the M416 silhouette */
+flashlightAk.position.set(0, -0.06, -0.50);
+flashlightM416.position.set(0, -0.07, -0.45);
+ak.add(flashlightAk);
+m416.add(flashlightM416);
+
+/* Update all flashlight-visible state in one place.
+ *  - Body meshes shown only when picked up.
+ *  - SpotLight intensity raises only when ON.
+ *  - Lens emissive bumps when ON so it reads as "lit".  */
+function _updateFlashlightVisual() {
+  const have = !!(player.inv && player.inv.hasFlashlight);
+  const on   = have && !!player.flashlightOn;
+  flashlightAk.visible   = have;
+  flashlightM416.visible = have;
+  flashlight.intensity   = on ? 9.0 : 0.0;   /* brighter to project across 140m range */
+  for (const fl of [flashlightAk, flashlightM416]) {
+    const lm = fl.userData && fl.userData.lensMat;
+    if (lm) lm.emissiveIntensity = on ? 1.8 : 0.0;
+  }
+}
+
 /* === SIGHT MOUNT POINTS — each weapon exposes a "sight slot" group on its
  * rail. We instantiate the red-dot and 3x scope ONCE and re-parent them
  * into the active weapon's slot when the player attaches them. */
@@ -5085,7 +5249,7 @@ const PVP_SPAWN_YAWS = [0, Math.PI];
  * empty hands (initial spawn). */
 const WEAPON_STATS = {
   ak:   { name: 'АКМ',   magSize: 30, fireRate: 0.10, reloadDuration: 2.5,
-          baseDamage: 1.0, reserveStart: 0, recoilVert: 0.020, recoilHoriz: 0.008,
+          baseDamage: 1.0, reserveStart: 0, recoilVert: 0.024, recoilHoriz: 0.0070,
           /* === REALISTIC SHOOTING METADATA ===
            *  weight: kg (affects ADS time, sprint speed)
            *  adsTime: seconds for full ADS engagement
@@ -5094,7 +5258,7 @@ const WEAPON_STATS = {
            *  zeroDist: scope/sight zero distance in metres (B6) */
           weight: 3.6, adsTime: 0.32, muzzleVel: 715, energyJ: 2010, zeroDist: 100 },
   m416: { name: 'M416',  magSize: 30, fireRate: 0.085, reloadDuration: 2.2,
-          baseDamage: 0.85, reserveStart: 0, recoilVert: 0.014, recoilHoriz: 0.006,
+          baseDamage: 0.85, reserveStart: 0, recoilVert: 0.017, recoilHoriz: 0.0055,
           weight: 3.4, adsTime: 0.27, muzzleVel: 880, energyJ: 1796, zeroDist: 100 }
 };
 
@@ -5145,6 +5309,17 @@ function computeSpreadCone(isFirstShot) {
   /* Sustained fire — once past shot index 4 the cone widens fast */
   const sprayPenalty = Math.max(0, (player._sprayIndex || 0) - 3);
   s += sprayPenalty * 0.0008;
+  /* === HEAT / BARREL DISPERSION =========================================
+   * Long bursts heat the barrel; the cone keeps growing even when ADS
+   * (because ADS doesn't cool a hot barrel). Kicks in past ~6 shots,
+   * grows quadratically for the next 14. Releasing the trigger for
+   * ~0.3 s resets _sprayIndex (see shoot()), which collapses this term
+   * back to zero — "calm" mechanic the user requested. */
+  const heatShots = Math.max(0, (player._sprayIndex || 0) - 4);
+  if (heatShots > 0) {
+    const heat = Math.min(heatShots, 14);
+    s += (heat * heat) * 0.00030;            /* heat ramps fast — punishes hold-fire */
+  }
   /* Stamina low → arms shake */
   if (typeof player.stamina === 'number' && player.stamina < 0.4) {
     s *= 1 + (0.4 - player.stamina) * 1.2;
@@ -5175,11 +5350,13 @@ const player = {
     hasRedDot:    false,
     hasScope3x:   false,
     hasSuppressor: false,
+    hasFlashlight: false,
     /* Which sight is mounted on each weapon. 'iron' | 'red_dot' | 'scope_3x' */
     sightAk:      'iron',
     sightM416:    'iron'
   },
   suppressorOn: false,
+  flashlightOn: false,           /* L toggles; requires inv.hasFlashlight */
   activeWeapon: null,           /* 'ak' | 'm416' | null (empty hands) */
   /* Per-weapon ammo state (loaded mag + reserve pool) */
   weaponState: {
@@ -5278,6 +5455,19 @@ function clearKeys() { for (const k in keys) keys[k] = false; }
 window.addEventListener('blur', clearKeys);
 window.addEventListener('focus', clearKeys);
 document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
+/* === Ctrl+W / window close guard =====================================
+ * Browsers do NOT let JS cancel the Ctrl+W / Ctrl+T / Alt+F4 shortcuts
+ * directly. The only thing we are allowed to do is show the standard
+ * "Leave site?" confirmation via beforeunload, which is enough to save a
+ * player from losing a match by reflex. We only arm it while a game is
+ * actually in progress (pointer is locked) so it doesn't nag in menus. */
+window.addEventListener('beforeunload', e => {
+  if (controls && controls.isLocked) {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
 /* Browser shortcuts to block while playing (Ctrl+E opens search bar, Ctrl+F
  * opens find-on-page, Ctrl+L jumps to address bar, Ctrl+P prints, Ctrl+S
  * saves page, Ctrl+R reloads, Ctrl+H opens history, Ctrl+J downloads,
@@ -5300,6 +5490,51 @@ function shouldBlockCombo(e) {
   /* Block backspace navigation (older browsers) */
   if (e.code === 'Backspace') return true;
   return false;
+}
+
+/* === DEBUG: Toggle collider wireframe visualization with K ============
+ * Shows ALL active AABB colliders (red wireframes) + tree trunks (yellow
+ * cylinders). Use this to find any "invisible walls" — anything you bump
+ * into that doesn't have a visible mesh is a bug. */
+let _debugColliders = null;
+function toggleColliderDebug() {
+  if (_debugColliders) {
+    scene.remove(_debugColliders);
+    _debugColliders.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+    _debugColliders = null;
+    if (typeof showNotice === 'function') showNotice('DEBUG: коллайдеры скрыты');
+    return;
+  }
+  const root = new THREE.Group();
+  const aabbMat = new THREE.LineBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.85 });
+  const treeMat = new THREE.LineBasicMaterial({ color: 0xffe040, transparent: true, opacity: 0.85 });
+  for (const c of colliders) {
+    const w = c.maxX - c.minX, d = c.maxZ - c.minZ;
+    const cx = (c.minX + c.maxX) / 2, cz = (c.minZ + c.maxZ) / 2;
+    const top = (c.maxY !== undefined) ? c.maxY : (terrainHeight(cx, cz) + 3.0);
+    const bot = terrainHeight(cx, cz);
+    const box = new THREE.BoxGeometry(w, top - bot, d);
+    const edges = new THREE.EdgesGeometry(box);
+    const line = new THREE.LineSegments(edges, aabbMat);
+    line.position.set(cx, (top + bot) / 2, cz);
+    root.add(line);
+    box.dispose();
+  }
+  for (const t of trees) {
+    const cy = terrainHeight(t.x, t.z);
+    const cyl = new THREE.CylinderGeometry(t.r, t.r, 3.5, 12);
+    const edges = new THREE.EdgesGeometry(cyl);
+    const line = new THREE.LineSegments(edges, treeMat);
+    line.position.set(t.x, cy + 1.75, t.z);
+    root.add(line);
+    cyl.dispose();
+  }
+  scene.add(root);
+  _debugColliders = root;
+  if (typeof showNotice === 'function') showNotice('DEBUG: коллайдеры (K — выкл)');
 }
 
 window.addEventListener('keydown', e => {
@@ -5348,6 +5583,16 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'KeyF') {
     tryInteract();
+  }
+  /* L — toggle flashlight (only if picked up from the equipment board). */
+  if (e.code === 'KeyL') {
+    if (!player.inv.hasFlashlight) {
+      showNotice('ФОНАРИК НЕ НАЙДЕН (СНАРЯЖЕНИЕ)');
+    } else {
+      player.flashlightOn = !player.flashlightOn;
+      if (typeof _updateFlashlightVisual === 'function') _updateFlashlightVisual();
+      showNotice(player.flashlightOn ? 'ФОНАРИК ВКЛ' : 'ФОНАРИК ВЫКЛ');
+    }
   }
   if (e.code === 'KeyO') {
     if (!player.inv.hasSuppressor) { showNotice('НЕТ ГЛУШИТЕЛЯ'); }
@@ -5711,8 +5956,9 @@ function shoot() {
   const stats = WEAPON_STATS[player.activeWeapon];
   if (player.activeWeapon === 'ak')   ak.userData.boltKick = 1;
   if (player.activeWeapon === 'm416') m416.userData.boltKick = 1;
-  /* Reset spray index after a short pause (A3 — reset rate) */
-  if (now - player._lastSprayShot > 0.25) player._sprayIndex = 0;
+  /* Reset spray index after a short pause (A3 — reset rate). 0.30 s
+   * matches the user's "release for 0.3 s to calm the barrel" spec. */
+  if (now - player._lastSprayShot > 0.30) player._sprayIndex = 0;
   player._lastSprayShot = now;
   const pattern = (player.activeWeapon === 'ak') ? RECOIL_PATTERN_AK : RECOIL_PATTERN_M416;
   const idx = Math.min(player._sprayIndex, pattern.length - 1);
@@ -5995,21 +6241,41 @@ function updateBullets(dt) {
         }
       } catch (_) {}
 
-      /* E1 — sub-sonic crack: when a bullet passes within 1.5m of the
-       *      player, play a whip sound. Only for ENEMY bullets. */
+      /* E1 — SUPERSONIC CRACK: when an enemy bullet passes within ~2.8m
+       * of the player, play a sharp "вжух" whip-crack near the ear.
+       * Distance widened (was 1.5m) per user request. The crack volume
+       * tapers with miss distance for a believable falloff. */
       if (!b.fromPlayer && audioCtx) {
         const ap = new THREE.Vector3().subVectors(player.position, b.prev);
         const tt = THREE.MathUtils.clamp(ap.dot(segDir), 0, segLen);
         const closest = b.prev.clone().addScaledVector(segDir, tt);
         const d = closest.distanceTo(player.position);
-        if (d < 1.5 && !b._crackedAtPlayer) {
+        if (d < 2.8 && !b._crackedAtPlayer) {
           b._crackedAtPlayer = true;
+          /* Bullet supersonic crack = white-noise hit-transient + a
+           * brief descending whistle (the air pressure tearing past).
+           * Combined they give the classic "вжух/zip" feel. */
           if (typeof _foleyHit === 'function') {
             _foleyHit(audioCtx.currentTime, {
-              dur: 0.06, decay: 60, peakFreq: 4500, peakGain: 12,
-              hp: 1500, lp: 12000, vol: Math.max(0.15, 0.4 - d * 0.18)
+              dur: 0.05, decay: 80, peakFreq: 5200, peakGain: 14,
+              hp: 1800, lp: 13000, vol: Math.max(0.18, 0.55 - d * 0.13)
             });
           }
+          try {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.type = 'sawtooth';
+            const now = audioCtx.currentTime;
+            o.frequency.setValueAtTime(3200, now);
+            o.frequency.exponentialRampToValueAtTime(900, now + 0.07);
+            g.gain.setValueAtTime(0.22 * (1 - d / 2.8), now);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+            o.connect(g);
+            g.connect(audioBus ? audioBus.preMaster : audioCtx.destination);
+            o.start(now); o.stop(now + 0.10);
+          } catch(_){}
+          /* Tiny suppression spike — getting shot at builds tension. */
+          if (typeof fxSuppression === 'function') fxSuppression(0.07);
         }
       }
     }
@@ -6177,7 +6443,11 @@ function updateDroppedMags(dt) {
 /* ========================================================================
    COLLISION (player vs colliders & trees)
    ======================================================================== */
-const PLAYER_RADIUS = 0.35;
+/* Player horizontal collision radius. Reduced from 0.35 → 0.28 so the
+ * player can squeeze through narrower gaps between obstacles (was sticky
+ * around concrete walls / barrels). 0.28 still keeps the camera from
+ * clipping into walls visually. */
+const PLAYER_RADIUS = 0.28;
 /* Height-aware AABB collision.
  *
  * Each collider has an optional `maxY` (world-Y of the top of the obstacle).
@@ -6255,9 +6525,9 @@ function updatePlayer(dt) {
    * zero, sprint is disabled until recovery (anti-pendulum threshold).
    * Stamina also affects cone-of-fire (computeSpreadCone). */
   if (sprinting && player.stamina > 0) {
-    player.stamina = Math.max(0, player.stamina - dt / 9);   /* 9s full drain */
+    player.stamina = Math.max(0, player.stamina - dt / 18);  /* 18s full drain (2× longer sprint) */
   } else {
-    player.stamina = Math.min(1, player.stamina + dt / 6);    /* 6s recovery */
+    player.stamina = Math.min(1, player.stamina + dt / 5);    /* 5s recovery */
   }
   if (player.stamina <= 0.05) sprinting = false;
   /* === D3 — ADS engagement ramp =====================================
@@ -6272,8 +6542,10 @@ function updatePlayer(dt) {
   const adsRate = dt / Math.max(0.05, adsTime);
   if (player.adsT < adsTarget) player.adsT = Math.min(adsTarget, player.adsT + adsRate);
   else if (player.adsT > adsTarget) player.adsT = Math.max(adsTarget, player.adsT - adsRate);
-  /* Crouch held while Ctrl is down (not sprinting) */
-  player.crouching = (keys['ControlLeft'] || keys['ControlRight']) && !sprinting;
+  /* Crouch: C (preferred) OR Ctrl (alternate). C avoids the browser-killing
+   * Ctrl+W combo that fires when you crouch-walk forward (Ctrl+W closes the
+   * tab and browsers do not let JS prevent that). */
+  player.crouching = (keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']) && !sprinting;
   /* Smooth eye height transition */
   const targetEye = player.crouching ? player.crouchEyeHeight : player.standEyeHeight;
   player.eyeHeight += (targetEye - player.eyeHeight) * (1 - Math.pow(0.001, dt));
@@ -6502,8 +6774,21 @@ function updatePlayer(dt) {
    * at z=-0.5 → new_y = +0.5 * sin(θ)).  Reducing camera-recoil while
    * ADS keeps the screen relatively stable but the GUN MODEL visibly
    * jumps in the optic frame, so the player sees real muzzle climb. */
-  weapon.position.z += player.recoil * 0.014;        /* push back toward shoulder */
-  weapon.rotation.x += player.recoil * 0.085;        /* MUZZLE CLIMBS UP */
+  /* === VISUAL RECOIL =====================================================
+   * The weapon MESH kicks so you SEE muzzle climb without bullets flying
+   * wild. Important details that fix the "iron sight pulled to the sky"
+   * bug:
+   *  • The kick is ADDED EVERY FRAME while `recoil > 0`. With a too-large
+   *    coefficient it integrates into a huge accumulated rotation before
+   *    the lerp-back-to-target can catch up (the previous 0.155 spiked
+   *    weapon.rotation.x to ~27° from a single shot).
+   *  • In ADS the gun is shouldered hard — the visual kick must be much
+   *    smaller or the iron-sight picture is unusable. We multiply by
+   *    (1 - 0.75 * adsT). At full ADS the visual kick is reduced 4×. */
+  const adsT = player.adsT || 0;
+  const visualKickMul = 1 - 0.75 * adsT;             /* ADS gun is steadier */
+  weapon.position.z += player.recoil * 0.014 * visualKickMul;
+  weapon.rotation.x += player.recoil * 0.045 * visualKickMul;   /* muzzle climb */
   /* Tiny lateral wobble for organic feel — applied to a SHORT-LIVED
    * frame-only offset, NOT baked into weapon.rotation.z. Without this fix
    * (the previous version), rotation.z accumulated indefinitely and the
@@ -7163,18 +7448,29 @@ function botShoot(bot, dist) {
       const tt = THREE.MathUtils.clamp(ap.dot(segDir), 0, segLen);
       const closest = muzzlePos.clone().addScaledVector(segDir, tt);
       const d = closest.distanceTo(player.position);
-      if (d < 1.6 && audioCtx && typeof _foleyHit === 'function') {
+      if (d < 2.8 && audioCtx && typeof _foleyHit === 'function') {
         /* delay the crack by approximate time-of-flight so it feels real */
-        const tofMs = Math.max(0, tt) / 380;     /* speed of sound ≈ 343 m/s,
-                                                    bullet ~880 m/s — overall
-                                                    we use 380 m/s to land the
-                                                    sound between fire and impact */
+        const tofMs = Math.max(0, tt) / 380;     /* avg speed bullet+sound */
         setTimeout(() => {
           _foleyHit(audioCtx.currentTime, {
-            dur: 0.06, decay: 60, peakFreq: 4500, peakGain: 14,
-            hp: 1500, lp: 12000,
-            vol: Math.max(0.18, 0.5 - d * 0.20)
+            dur: 0.05, decay: 80, peakFreq: 5200, peakGain: 16,
+            hp: 1800, lp: 13000,
+            vol: Math.max(0.20, 0.6 - d * 0.15)
           });
+          /* Descending whistle (air pressure) — the "вжух" tail */
+          try {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.type = 'sawtooth';
+            const now = audioCtx.currentTime;
+            o.frequency.setValueAtTime(3200, now);
+            o.frequency.exponentialRampToValueAtTime(900, now + 0.07);
+            g.gain.setValueAtTime(0.20 * (1 - d / 2.8), now);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+            o.connect(g);
+            g.connect(audioBus ? audioBus.preMaster : audioCtx.destination);
+            o.start(now); o.stop(now + 0.10);
+          } catch(_){}
         }, tofMs * 1000);
       }
     }
@@ -7678,6 +7974,14 @@ function pickUpFromBoard(slot) {
       _updateSuppressorVisual();
       showNotice('ГЛУШИТЕЛЬ (O — надеть/снять)');
       break;
+    case 'flashlight':
+      if (player.inv.hasFlashlight) { showNotice('ФОНАРИК УЖЕ В ИНВЕНТАРЕ'); return; }
+      player.inv.hasFlashlight = true;
+      /* Auto-on at night for instant utility, off in daytime */
+      player.flashlightOn = (typeof dayNight !== 'undefined' && dayNight.daylight < 0.4);
+      if (typeof _updateFlashlightVisual === 'function') _updateFlashlightVisual();
+      showNotice('ФОНАРИК (L — вкл/выкл)');
+      break;
     case 'medkit':
       /* Cap at 5 to prevent infinite hoarding. Medkit dispenser does NOT
        * mark itself taken — player can keep coming back for more (subject
@@ -7795,7 +8099,8 @@ function updateAmmoHint() {
       ({ ak:'АКМ', m416:'M416', armor:'БРОНЕЖИЛЕТ',
          helmet:'ШЛЕМ', backpack:'РЮКЗАК',
          red_dot:'КОЛЛИМАТОР', scope_3x:'ПРИЦЕЛ 3X',
-         medkit:'АПТЕЧКИ x2', suppressor:'ГЛУШИТЕЛЬ' }[slot.kind] || slot.kind);
+         medkit:'АПТЕЧКИ x2', suppressor:'ГЛУШИТЕЛЬ',
+         flashlight:'ФОНАРИК' }[slot.kind] || slot.kind);
     return;
   }
   const crate = nearestAmmoCrate();
@@ -7883,24 +8188,127 @@ function showDamageDirection(sourceWorldPos) {
  *     warm-cool balance is driven by the sun's elevation. Cheap (CSS only).
  * ------------------------------------------------------------------------- */
 function updateSkyGradient() {
-  /* Compute sun height (0=horizon, 1=zenith) from the directional light */
+  /* Sky/fog colors are now driven from `dayNight.daylight` (set by
+   * updateDayNight), interpolating between night, dusk and day palettes.
+   * The sun's y is still used as a finer-grained warmth dial during the
+   * day so the horizon glows warm at low sun. */
   if (typeof sun === 'undefined' || !sun.position) return;
-  const sunY = sun.position.clone().normalize().y;     /* [-1,1] */
-  const t = THREE.MathUtils.clamp(sunY * 1.1, 0.0, 1.0);
-  /* Top-of-sky color: deep blue at zenith, lavender as sun lowers */
-  const topR = Math.round(70  + (1-t) * 70);
-  const topG = Math.round(120 + (1-t) * 30);
-  const topB = Math.round(190 - (1-t) * 30);
-  /* Horizon color: warm at low sun, pale blue at high sun */
-  const horR = Math.round(220 - t * 50);
-  const horG = Math.round(180 - t * 30);
-  const horB = Math.round(160 + t * 60);
+  const d = (typeof dayNight !== 'undefined') ? dayNight.daylight : 1;
+  const sunY = sun.position.clone().normalize().y;
+  /* warmth: 0 = sunset/sunrise warmth, 1 = high noon */
+  const warmth = THREE.MathUtils.clamp(sunY * 1.1, 0.0, 1.0);
+  /* Daylight palette */
+  const topRD = Math.round(70  + (1-warmth) * 70);
+  const topGD = Math.round(120 + (1-warmth) * 30);
+  const topBD = Math.round(190 - (1-warmth) * 30);
+  const horRD = Math.round(220 - warmth * 50);
+  const horGD = Math.round(180 - warmth * 30);
+  const horBD = Math.round(160 + warmth * 60);
+  /* Night palette — deep blue, very dark */
+  const topRN = 8,  topGN = 12, topBN = 30;
+  const horRN = 18, horGN = 22, horBN = 42;
+  /* Blend between night (d=0) and day (d=1) */
+  const lerp = (a, b) => Math.round(a + (b - a) * d);
+  const topR = lerp(topRN, topRD), topG = lerp(topGN, topGD), topB = lerp(topBN, topBD);
+  const horR = lerp(horRN, horRD), horG = lerp(horGN, horGD), horB = lerp(horBN, horBD);
   if (scene.background && scene.background.isColor) {
     scene.background.setRGB(((topR+horR)/510), ((topG+horG)/510), ((topB+horB)/510));
   }
   if (scene.fog) {
     scene.fog.color.setRGB(horR/255, horG/255, horB/255);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * 2b. DAY / NIGHT CYCLE  —  per user spec: 10 min day + 2 min night = 12
+ *     minute total cycle. Dawn/dusk transitions of ~30 s on each edge
+ *     ensure the change is smooth instead of a hard cut.
+ *     - Sun travels along an arc: dawn → noon → dusk → midnight → dawn.
+ *     - `dayNight.daylight` is 0 at midnight, 1 at noon.
+ *     - Lighting (sun/hemi/ambient intensities + colors) and fog density
+ *       are interpolated from `daylight`. Night uses a dense short-range
+ *       fog so the flashlight beam has visible volume in the air.
+ * ------------------------------------------------------------------------- */
+const dayNight = {
+  /* Per user: day = 10 min, night = 2 min. Day-to-night transitions
+   * (dawn/dusk) are part of the day length, ~25s each. */
+  dayLen:   600,        /* 10 min of daylight (including dawn/dusk) */
+  nightLen: 120,        /* 2 min of full night */
+  dawnLen:  30,         /* sunrise transition in seconds */
+  duskLen:  30,         /* sunset transition in seconds */
+  t0: performance.now() / 1000,
+  daylight: 1,
+  isNight: false
+};
+function updateDayNight() {
+  if (typeof sun === 'undefined' || !sun.position) return;
+  const now = performance.now() / 1000;
+  const cycle = dayNight.dayLen + dayNight.nightLen;
+  const t = ((now - dayNight.t0) % cycle + cycle) % cycle;
+  /* === DAYLIGHT VALUE ===================================================
+   * Piecewise: dawn ramp → flat day → dusk ramp → night plateau (0). */
+  let dl;
+  if (t < dayNight.dawnLen) {
+    dl = THREE.MathUtils.smoothstep(t / dayNight.dawnLen, 0, 1);
+  } else if (t < dayNight.dayLen - dayNight.duskLen) {
+    dl = 1;
+  } else if (t < dayNight.dayLen) {
+    const u = (t - (dayNight.dayLen - dayNight.duskLen)) / dayNight.duskLen;
+    dl = 1 - THREE.MathUtils.smoothstep(u, 0, 1);
+  } else {
+    dl = 0;
+  }
+  dayNight.daylight = dl;
+  dayNight.isNight = dl < 0.15;
+  /* === SUN ARC ==========================================================
+   * During day: rotate from -π/2 (dawn east, horizon) → +π/2 (dusk west,
+   * horizon), with zenith at solar noon. During night: continue the arc
+   * +π/2 → 3π/2 below the horizon so the sun mesh moves consistently. */
+  let ang;
+  if (t < dayNight.dayLen) {
+    ang = (t / dayNight.dayLen) * Math.PI - Math.PI / 2;          /* -π/2 → +π/2 */
+  } else {
+    const np = (t - dayNight.dayLen) / dayNight.nightLen;
+    ang = Math.PI / 2 + np * Math.PI;                              /* +π/2 → 3π/2 */
+  }
+  const sinE = Math.sin(ang);
+  const cosE = Math.cos(ang);
+  /* Sun position — circles around the player. Y stays bounded so the
+   * directional light never inverts strangely; below horizon it just
+   * dims out via `intensity`. */
+  const cx = player.position ? player.position.x : 0;
+  const cz = player.position ? player.position.z : 0;
+  const sunDist = 140;
+  sun.position.set(
+    cx + Math.cos(ang) * sunDist * 0.5,
+    Math.max(20, sinE * 110 + 30),
+    cz + Math.sin(ang) * sunDist * 0.4
+  );
+  sun.target.position.set(cx, 0, cz);
+  /* Light intensities */
+  sun.intensity     = THREE.MathUtils.lerp(0.0,  0.95, dl);
+  hemi.intensity    = THREE.MathUtils.lerp(0.08, 0.85, dl);
+  ambient.intensity = THREE.MathUtils.lerp(0.06, 0.62, dl);
+  /* Hemi sky color blends from deep night-blue to overcast grey */
+  hemi.color.setRGB(
+    THREE.MathUtils.lerp(0.06, 0.71, dl),
+    THREE.MathUtils.lerp(0.08, 0.76, dl),
+    THREE.MathUtils.lerp(0.18, 0.81, dl)
+  );
+  hemi.groundColor.setRGB(
+    THREE.MathUtils.lerp(0.04, 0.31, dl),
+    THREE.MathUtils.lerp(0.04, 0.29, dl),
+    THREE.MathUtils.lerp(0.06, 0.24, dl)
+  );
+  /* Fog near/far: at night, pull fog in MUCH closer so visibility is
+   * cut to ~30m — matches the user's "20-80m fog" spec and lets the
+   * flashlight beam read prominently. */
+  if (scene.fog) {
+    scene.fog.near = THREE.MathUtils.lerp(18, 60, dl);
+    scene.fog.far  = THREE.MathUtils.lerp(70, 220, dl);
+  }
+  /* Disable expensive sun shadow map at night (sun barely contributes) */
+  sun.castShadow = dl > 0.18;
 }
 
 /* ---------------------------------------------------------------------------
@@ -8065,11 +8473,12 @@ function updateGrenades(dt) {
     }
   }
 }
-/* Frag explosion — radius 18m (per user request, ~4× the previous 4.5m).
- * Realistic M67 has 5m casualty radius and 15m kill / 230m fragmentation.
- * The blast does maximum damage at the center and falls off linearly. */
+/* Frag explosion — radius 36m (per user request, 2× the previous 18m).
+ * Realistic M67 has 5m casualty radius and 15m kill / 230m fragmentation;
+ * 36m is gamey-large but matches the user's preferred feel. The blast does
+ * max damage at the center and falls off linearly. */
 function detonateFrag(pos) {
-  const RADIUS = 18.0;
+  const RADIUS = 36.0;
   /* Visual */
   try { spawnFireBurst(pos, 1.7); } catch(_){}
   /* Audio */
@@ -8123,21 +8532,20 @@ function detonateSmoke(pos) {
   grp.position.copy(pos);
   scene.add(grp);
   const sprites = [];
-  /* 18 sprites in a wider spread to cover the new 8m smoke radius. The
-   * count is intentionally kept moderate (instead of doubling along with
-   * the radius) so we don't tank framerate; the larger SCALE per sprite
-   * gives the visual coverage needed. */
-  for (let i = 0; i < 18; i++) {
+  /* 26 sprites spread to cover the new 16m smoke radius. Count is bumped
+   * modestly (vs. 18) and each sprite is also larger; the bulk of the
+   * visual coverage is from per-sprite scale, not count, to keep perf. */
+  for (let i = 0; i < 26; i++) {
     const m = new THREE.SpriteMaterial({
       color: 0xcacaca, transparent: true, opacity: 0.0, depthWrite: false
     });
     const s = new THREE.Sprite(m);
     s.position.set(
-      (Math.random()-0.5) * 4.0,
-      0.2 + Math.random() * 2.4,
-      (Math.random()-0.5) * 4.0
+      (Math.random()-0.5) * 8.0,
+      0.2 + Math.random() * 3.2,
+      (Math.random()-0.5) * 8.0
     );
-    s.scale.setScalar(2.6 + Math.random() * 1.0);
+    s.scale.setScalar(4.4 + Math.random() * 1.4);
     grp.add(s);
     sprites.push({
       mesh: s, vx: (Math.random()-0.5)*0.5,
@@ -8148,8 +8556,8 @@ function detonateSmoke(pos) {
   smokeClouds.push({
     obj: grp, sprites, t0,
     pos: pos.clone(),
-    radius: 8.0,        /* 2× previous (per user) — covers a wider area */
-    duration: 10.0,     /* 10 second AI occlusion */
+    radius: 16.0,       /* 2× previous (per user request) — covers a much wider area */
+    duration: 20.0,     /* 2× previous — 20 second AI occlusion */
     growT: 0.6
   });
 }
@@ -8505,12 +8913,11 @@ function animate() {
   /* HUD updates every other frame (text changes) — saves DOM writes */
   if ((_animFrame & 1) === 0) updateHUD();
 
-  /* sun follows player loosely so shadows are good around camera —
-   * update every 4th frame; the change-per-frame is too small to see. */
+  /* DAY/NIGHT + sky/fog — drives sun position, light intensities, fog
+   * range and sky/horizon colors. Updated every 4th frame; the cycle is
+   * slow (120s period) so this is more than smooth enough. */
   if ((_animFrame & 3) === 0) {
-    sun.position.set(player.position.x + 80, 120, player.position.z + 60);
-    sun.target.position.copy(player.position);
-    /* Atmospheric scattering — updates the sky gradient based on sun angle */
+    if (typeof updateDayNight === 'function') updateDayNight();
     if (typeof updateSkyGradient === 'function') updateSkyGradient();
     /* OPT: re-render the shadow map now that the sun has moved. Paired
      * with shadowMap.autoUpdate=false so frames 1-3 skip shadow work. */
@@ -8966,22 +9373,22 @@ if (PVP_MODE) {
         dir.normalize();
         const to = from.clone().addScaledVector(dir, 80);
         try { spawnTracer(from, to); } catch(_){}
-        /* Whip-by: if the flight path passes within 1.5m of the camera, play
-         * a short whip sound. Compute closest approach analytically. */
+        /* Supersonic crack: if the flight path passes within ~2.8m of the
+         * camera, play a sharp "вжух" near the ear. */
         const cam = player.position;
         const toCam = cam.clone().sub(from);
         const tClosest = Math.max(0, Math.min(80, toCam.dot(dir)));
         const closestPt = from.clone().addScaledVector(dir, tClosest);
         const minD = closestPt.distanceTo(cam);
-        if (minD < 1.8 && audioCtx) {
+        if (minD < 2.8 && audioCtx) {
           try {
             const o = audioCtx.createOscillator();
             const g = audioCtx.createGain();
             o.type = 'sawtooth';
             const now = audioCtx.currentTime;
-            o.frequency.setValueAtTime(2600, now);
+            o.frequency.setValueAtTime(3200, now);
             o.frequency.exponentialRampToValueAtTime(900, now + 0.08);
-            g.gain.setValueAtTime(0.25 * (1 - minD / 1.8), now);
+            g.gain.setValueAtTime(0.25 * (1 - minD / 2.8), now);
             g.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
             o.connect(g); g.connect(audioCtx.destination);
             o.start(now); o.stop(now + 0.1);

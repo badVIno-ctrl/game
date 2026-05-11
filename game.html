@@ -505,12 +505,34 @@ document.addEventListener('visibilitychange', () => {
 /* Handle WebGL context loss gracefully — some drivers force a reset
  * when GPU memory pressure is high. Without this listener, the canvas
  * goes black and the page must be reloaded. */
+/* Context-loss recovery: pause the animation loop when the GPU context is
+ * lost, force a full effect-array purge to free GPU memory, and resume
+ * rendering when the context is restored. Without this the page goes black
+ * permanently after a GPU hiccup. */
+let _ctxLost = false;
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
+  _ctxLost = true;
   console.warn('WebGL context lost — pausing animation.');
+  /* Drop all visual effects so the GPU can recover without re-uploading
+   * mountains of stale textures/geometries when it comes back. */
+  try {
+    if (typeof tracers !== 'undefined') {
+      while (tracers.length) { const t = tracers.shift(); try { scene.remove(t.line); _disposeObj(t.line); } catch(_){} }
+    }
+    if (typeof decals !== 'undefined') {
+      while (decals.length) { const d = decals.shift(); try { scene.remove(d.obj); _disposeObj(d.obj); } catch(_){} }
+    }
+    if (typeof impacts !== 'undefined') {
+      while (impacts.length) { const p = impacts.shift(); try { scene.remove(p.obj); _disposeObj(p.obj); } catch(_){} }
+    }
+  } catch(_){}
 }, false);
 canvas.addEventListener('webglcontextrestored', () => {
-  console.warn('WebGL context restored.');
+  _ctxLost = false;
+  console.warn('WebGL context restored — resuming.');
+  /* Force shadow map regen on the next eligible frame */
+  try { renderer.shadowMap.needsUpdate = true; } catch(_){}
 }, false);
 
 const scene = new THREE.Scene();
@@ -524,6 +546,13 @@ scene.fog = new THREE.Fog(0x8a929a, 60, 220);
 
 const camera = new THREE.PerspectiveCamera(78, window.innerWidth / window.innerHeight, 0.05, 600);
 camera.position.set(0, 1.7, 0);
+/* Apply initial yaw based on PvP spawn (player 2 faces south toward combat).
+ * Done here so the first frame already shows the correct heading. */
+if (typeof PVP_MODE !== 'undefined' && PVP_MODE &&
+    typeof PVP_SPAWN_YAWS !== 'undefined' && typeof PVP_SPAWN !== 'undefined') {
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = PVP_SPAWN_YAWS[PVP_SPAWN] || 0;
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -756,9 +785,42 @@ const concreteTex = tex(makeNoiseCanvas(128, () => {
    TERRAIN
    ======================================================================== */
 const TERRAIN_SIZE = 400;
-const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 100, 100);
+/* Use a 140×140 grid instead of 100×100 — higher vertex density gives
+ * smoother terrain deformation where trenches dip, without the triangles
+ * tearing. Still well within perf budget. */
+const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 140, 140);
 terrainGeo.rotateX(-Math.PI / 2);
 const tPos = terrainGeo.attributes.position;
+
+/* === TRENCHES — list of rectangular depressions in the terrain.
+ * Each entry: { cx, cz, halfX, halfZ, rotY, depth }
+ *   cx/cz     — center in world coords
+ *   halfX/Z   — half-extents (in local, pre-rotation, metres)
+ *   rotY      — rotation around Y axis (radians)
+ *   depth     — how far the floor dips below normal terrain
+ *
+ * Populated BEFORE terrain vertex snapping below, so the trenches are
+ * baked into the mesh. Filled in at PvP init + always a few in PvE for
+ * tactical variety. Edge smoothing is done in `terrainHeight()` so the
+ * player can walk in/out via gentle ramps on every side. */
+const TRENCH_RECTS = [];
+
+/* Always-on PvE trenches — placed along the main advance corridor so the
+ * player has something to dive into when bots pin them down. */
+TRENCH_RECTS.push({ cx:   4, cz:   -5, halfX: 1.2, halfZ: 4.0, rotY: 0.0,           depth: 1.1 });
+TRENCH_RECTS.push({ cx: -15, cz:  -40, halfX: 1.2, halfZ: 3.5, rotY: Math.PI / 10,  depth: 1.0 });
+TRENCH_RECTS.push({ cx:  12, cz:  -75, halfX: 1.2, halfZ: 3.5, rotY: -Math.PI / 8,  depth: 1.1 });
+TRENCH_RECTS.push({ cx:  -6, cz: -110, halfX: 1.2, halfZ: 4.0, rotY: 0.0,           depth: 1.0 });
+
+/* PvP-only extra trenches — added only when running the online arena so
+ * PvE keeps its familiar shape. Push them BEFORE the terrain is baked. */
+if (typeof PVP_MODE !== 'undefined' && PVP_MODE) {
+  TRENCH_RECTS.push({ cx:  -8, cz:  -25, halfX: 1.2, halfZ: 3.0, rotY: Math.PI / 6, depth: 1.0 });
+  TRENCH_RECTS.push({ cx:  14, cz:  -55, halfX: 1.2, halfZ: 3.0, rotY: 0.0,          depth: 1.1 });
+  TRENCH_RECTS.push({ cx: -14, cz:  -95, halfX: 1.2, halfZ: 3.5, rotY: -Math.PI / 5, depth: 1.0 });
+  TRENCH_RECTS.push({ cx:  10, cz: -125, halfX: 1.2, halfZ: 3.0, rotY: 0.0,          depth: 1.0 });
+}
+
 function terrainHeight(x, z) {
   /* Larger rolling hills + medium ridges + small bumps for visual relief */
   const big   = Math.sin(x * 0.018) * Math.cos(z * 0.022) * 2.4;
@@ -768,7 +830,25 @@ function terrainHeight(x, z) {
   /* Edge falloff so the map feels bowl-like */
   const r = Math.hypot(x, z);
   const edge = r > 140 ? (r - 140) * 0.08 : 0;
-  return big + med + small + tiny - edge;
+  let h = big + med + small + tiny - edge;
+  /* Trench depressions: subtract depth*falloff where inside a trench rect.
+   * Falloff is linear over the last 0.9m of each edge so the player can
+   * walk in/out via a gentle ramp on all four sides (no cliffs). */
+  for (let i = 0; i < TRENCH_RECTS.length; i++) {
+    const t = TRENCH_RECTS[i];
+    const dx = x - t.cx;
+    const dz = z - t.cz;
+    const c = Math.cos(t.rotY), s = Math.sin(t.rotY);
+    const lx =  dx * c + dz * s;
+    const lz = -dx * s + dz * c;
+    const insideX = t.halfX - Math.abs(lx);
+    const insideZ = t.halfZ - Math.abs(lz);
+    if (insideX > 0 && insideZ > 0) {
+      const ramp = Math.min(insideX, insideZ, 0.9) / 0.9;  /* 0..1 */
+      h -= t.depth * ramp;
+    }
+  }
+  return h;
 }
 for (let i = 0; i < tPos.count; i++) {
   const x = tPos.getX(i);
@@ -1929,27 +2009,78 @@ function buildEquipBoard() {
   equipBoard._meshGroup = g;
 }
 
-/* === Builds a DECORATIVE clone of the equipment board at (cx, cz) facing
- * rotY. Used in PvP mode to give BOTH spawn points a board (player 2's
- * spawn at z=-140 previously had no visible gear cache). No interaction
- * slots or colliders — PvP auto-equips so the board is purely visual. */
+/* === Builds a fully-FUNCTIONAL clone of the equipment board at (cx, cz)
+ * facing rotY. Used in PvP mode to give BOTH spawn points a board (player 2's
+ * spawn at z=-140 previously had no visible gear cache). The clone is
+ * registered as additional slots in `equipBoard.slots[]` so F-pickup works.
+ *
+ * Slots are TWINNED with the original — picking up at one board hides the
+ * miniature on BOTH (so the board state stays consistent across spawns). */
 function mirrorEquipBoardAt(cx, cz, rotY) {
   if (!equipBoard._meshGroup) return;
-  const clone = equipBoard._meshGroup.clone(true);
+  const original = equipBoard._meshGroup;
+  const clone = original.clone(true);
   clone.position.set(cx, terrainHeight(cx, cz), cz);
   clone.rotation.y = rotY;
   scene.add(clone);
-  /* Add a thin backwall collider so the board blocks movement (otherwise
-   * it looks weird to walk through a wooden rack). */
+  /* Build a parallel-traversal map from original meshes → cloned meshes
+   * so we can look up cloned counterparts of the slot.obj / slot.label. */
+  const map = new Map();
+  (function walk(a, b) {
+    map.set(a, b);
+    const n = Math.min(a.children.length, b.children.length);
+    for (let i = 0; i < n; i++) walk(a.children[i], b.children[i]);
+  })(original, clone);
+  /* Snapshot the original slot list once — we're about to push new entries
+   * into the same array and don't want to iterate them. */
+  const originalSlots = equipBoard.slots.slice();
   const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-  const dx = -0.15 * sinY, dz = 0.15 * cosY;
+  for (const orig of originalSlots) {
+    /* Recover local-X of the slot (slots sit at local Z=0 of the board). */
+    const localX = orig.x - equipBoard.cx;
+    /* Rotate (localX, 0) by rotY around clone origin, translate to (cx, cz). */
+    const wX = cx + localX * cosY;
+    const wZ = cz + localX * sinY;
+    /* Recover local-Y (height above terrain at that point) and re-add the
+     * terrain height at the mirrored world position. */
+    const origGroundY = terrainHeight(orig.x, orig.z);
+    const localY = orig.y - origGroundY;
+    const wY = terrainHeight(wX, wZ) + localY;
+    const newSlot = {
+      obj:  map.get(orig.obj)   || null,
+      label: map.get(orig.label) || null,
+      kind: orig.kind,
+      taken: orig.taken,
+      x: wX, y: wY, z: wZ,
+      _twin: orig                /* twin reference — see pickUpFromBoard */
+    };
+    /* Twin link goes both ways so the original also hides when player
+     * picks up at the mirror board. */
+    orig._twin = newSlot;
+    /* If the original was already taken (shouldn't happen at init but be
+     * safe), reflect that on the mirror immediately. */
+    if (orig.taken) {
+      if (newSlot.obj)   newSlot.obj.visible = false;
+      if (newSlot.label && newSlot.label.material) {
+        newSlot.label.material.transparent = true;
+        newSlot.label.material.opacity = 0.25;
+      }
+    }
+    equipBoard.slots.push(newSlot);
+  }
+  /* Backwall collider — thin slab oriented to the rotated board.
+   * 5.2m wide (the board's full extent) × 0.3m thick. */
+  const halfW = 2.6;
+  const thk = 0.15;
   colliders.push({
-    minX: cx - Math.abs(2.6 * cosY) - Math.abs(dx), maxX: cx + Math.abs(2.6 * cosY) + Math.abs(dx),
-    minZ: cz - Math.abs(2.6 * sinY) - Math.abs(dz), maxZ: cz + Math.abs(2.6 * sinY) + Math.abs(dz)
+    minX: cx - Math.abs(halfW * cosY) - Math.abs(thk * sinY),
+    maxX: cx + Math.abs(halfW * cosY) + Math.abs(thk * sinY),
+    minZ: cz - Math.abs(halfW * sinY) - Math.abs(thk * cosY),
+    maxZ: cz + Math.abs(halfW * sinY) + Math.abs(thk * cosY)
   });
   /* Spotlight from above so the board is visible at night / in shadow */
   const spot = new THREE.PointLight(0xffd070, 1.6, 9.0, 1.5);
-  spot.position.set(cx, terrainHeight(cx, cz) + 2.4, cz + 0.5 * cosY);
+  spot.position.set(cx, terrainHeight(cx, cz) + 2.4, cz - 0.5 * sinY);
   scene.add(spot);
   return clone;
 }
@@ -2015,16 +2146,32 @@ function addDecorativeHouse(cx, cz, rotY, variant) {
   g.position.set(cx, terrainHeight(cx, cz), cz);
   g.rotation.y = rotY || 0;
   scene.add(g);
-  /* Collider: use a single AABB matching the footprint (rotation-aware:
-   * if rotY is 0 or PI, W spans X, D spans Z. If rotY is PI/2, they swap.) */
-  const yaw = ((rotY || 0) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
-  const sideways = (Math.abs(yaw - Math.PI/2) < 0.1 || Math.abs(yaw - 3*Math.PI/2) < 0.1);
-  const halfX = (sideways ? D : W) / 2 + 0.15;
-  const halfZ = (sideways ? W : D) / 2 + 0.15;
-  colliders.push({
-    minX: cx - halfX, maxX: cx + halfX,
-    minZ: cz - halfZ, maxZ: cz + halfZ
-  });
+  /* === Wall-tight colliders ============================================
+   * Previous version used a single big AABB matching the entire footprint,
+   * which made the area around houses unwalkable. Replace with 4 THIN
+   * wall colliders (rotation-aware, ~0.3m thick incl. player radius pad).
+   * Player can now walk RIGHT UP TO the walls and squeeze along corners.
+   * Each wall is full house height (no maxY) so it blocks at any altitude. */
+  const cosY = Math.cos(rotY || 0), sinY = Math.sin(rotY || 0);
+  const wallThk = 0.18; /* half-thickness of wall slab */
+  function _pushWallAABB(localCx, localCz, halfW, halfD) {
+    /* Transform local rect (axis-aligned in local frame) to world AABB.
+     * Local rect spans [localCx-halfW .. localCx+halfW] × [localCz-halfD .. localCz+halfD].
+     * After rotation by rotY around origin, AABB extents are:
+     *   eX = halfW*|cos| + halfD*|sin|
+     *   eZ = halfW*|sin| + halfD*|cos| */
+    const wcx = cx + localCx * cosY + localCz * sinY;
+    const wcz = cz - localCx * sinY + localCz * cosY;
+    const eX = Math.abs(halfW * cosY) + Math.abs(halfD * sinY);
+    const eZ = Math.abs(halfW * sinY) + Math.abs(halfD * cosY);
+    colliders.push({ minX: wcx - eX, maxX: wcx + eX, minZ: wcz - eZ, maxZ: wcz + eZ });
+  }
+  /* Front + back walls: thin in Z, wide in X */
+  _pushWallAABB(0, -D/2, W/2, wallThk);
+  _pushWallAABB(0,  D/2, W/2, wallThk);
+  /* Left + right walls: thin in X, wide in Z */
+  _pushWallAABB(-W/2, 0, wallThk, D/2);
+  _pushWallAABB( W/2, 0, wallThk, D/2);
   return g;
 }
 
@@ -2048,18 +2195,24 @@ function addSandbagCluster(cx, cz, width, rotY) {
   g.position.set(cx, terrainHeight(cx, cz), cz);
   g.rotation.y = rotY || 0;
   scene.add(g);
-  /* Rotation-aware AABB collider */
+  /* Rotation-aware AABB collider with `maxY` so the player can JUMP ON TOP
+   * of sandbags. Sandbag wall is 2 rows × 0.42m = 0.84m tall, plus the
+   * terrain Y at the cluster center. */
   const cosY = Math.cos(rotY || 0), sinY = Math.sin(rotY || 0);
-  const halfX = Math.abs(width/2 * cosY) + Math.abs(0.5 * sinY);
-  const halfZ = Math.abs(width/2 * sinY) + Math.abs(0.5 * cosY);
+  const halfX = Math.abs(width/2 * cosY) + Math.abs(0.30 * sinY);
+  const halfZ = Math.abs(width/2 * sinY) + Math.abs(0.30 * cosY);
+  const topY = terrainHeight(cx, cz) + 0.84;
   colliders.push({
     minX: cx - halfX, maxX: cx + halfX,
-    minZ: cz - halfZ, maxZ: cz + halfZ
+    minZ: cz - halfZ, maxZ: cz + halfZ,
+    maxY: topY
   });
   return g;
 }
 
-/* === Builds a crate pile for cover. Random stack of 3-6 boxes. */
+/* === Builds a crate pile for cover. Random stack of 3-6 boxes.
+ * Tall stacks (>1 row) get full-height blocking — short stacks are
+ * jumpable via the `maxY` height-aware collision. */
 function addCratePile(cx, cz, seed) {
   seed = seed || 1;
   const rng = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
@@ -2067,17 +2220,28 @@ function addCratePile(cx, cz, seed) {
   const crMat1 = new THREE.MeshStandardMaterial({ map: woodTex, color: 0x8a5a2e, roughness: 0.9 });
   const crMat2 = new THREE.MeshStandardMaterial({ map: woodTex, color: 0x6a4020, roughness: 0.9 });
   const n = 3 + Math.floor(rng() * 4);
+  let topPileY = 0;
   for (let i = 0; i < n; i++) {
     const s = 0.8 + rng() * 0.3;
     const cr = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), (i % 2) ? crMat1 : crMat2);
-    cr.position.set((rng() - 0.5) * 1.2, s/2 + (i > 2 ? s : 0), (rng() - 0.5) * 1.2);
+    const cy = s/2 + (i > 2 ? s : 0);
+    cr.position.set((rng() - 0.5) * 1.2, cy, (rng() - 0.5) * 1.2);
     cr.rotation.y = rng() * Math.PI;
     g.add(cr);
+    /* Track the top of the highest crate so we know jumpable height. */
+    const crTop = cy + s/2;
+    if (crTop > topPileY) topPileY = crTop;
   }
   g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
   g.position.set(cx, terrainHeight(cx, cz), cz);
   scene.add(g);
-  colliders.push({ minX: cx - 1.2, maxX: cx + 1.2, minZ: cz - 1.2, maxZ: cz + 1.2 });
+  /* Tighter footprint than before (1.0 instead of 1.2) so adjacent crates
+   * don't merge into impassable walls. Player jumps on top of pile. */
+  colliders.push({
+    minX: cx - 1.0, maxX: cx + 1.0,
+    minZ: cz - 1.0, maxZ: cz + 1.0,
+    maxY: terrainHeight(cx, cz) + topPileY
+  });
   return g;
 }
 
@@ -4900,12 +5064,21 @@ function playEnemyShot(dist, srcPos) {
 /* ========================================================================
    PLAYER STATE & CONTROLS
    ======================================================================== */
-const SPAWN_POS = new THREE.Vector3(8, 1.7, 21); /* behind the cabin (cabin center 8,16; back wall 18.75) */
-/* PVP spawn points: 0 = player cabin area, 1 = enemy base area */
+/* Spawn directly IN FRONT of the equipment board so the player sees the
+ * loadout immediately and can press F to grab gear without searching.
+ * Board center is at (8, 19.5), items face +Z (south). Player at z=20.7 is
+ * 1.2m south of items, looking -Z (north) → items are 1.2m in front. */
+const SPAWN_POS = new THREE.Vector3(8, 1.7, 20.7);
+/* PVP spawn points: 0 = player 1 (south), 1 = player 2 (north).
+ * Each spawn is 1.2m in front of its own equipment board, looking AT it.
+ * Player 2 also gets yaw=π (180°) at spawn so they face SOUTH toward the
+ * combat zone instead of away from it — set in the PvP init block. */
 const PVP_SPAWNS = [
-  new THREE.Vector3(8, 1.7, 21),       /* spawn 0: player cabin */
-  new THREE.Vector3(0, 1.7, -140),     /* spawn 1: near enemy base */
+  new THREE.Vector3(8,  1.7,  20.7),    /* spawn 0: in front of original board */
+  new THREE.Vector3(0,  1.7, -139.7),   /* spawn 1: in front of mirror board (at -138.5, items face -Z) */
 ];
+/* Initial yaw per PvP spawn — see PVP_MODE init block where this is applied. */
+const PVP_SPAWN_YAWS = [0, Math.PI];
 /* === WEAPON CONFIGS ===
  * Per-weapon stats + attachment slot. The active weapon is selected via
  * player.activeWeapon ('ak' | 'm416' | null). When null the player has
@@ -6005,7 +6178,16 @@ function updateDroppedMags(dt) {
    COLLISION (player vs colliders & trees)
    ======================================================================== */
 const PLAYER_RADIUS = 0.35;
-function collidePoint(x, z) {
+/* Height-aware AABB collision.
+ *
+ * Each collider has an optional `maxY` (world-Y of the top of the obstacle).
+ * If the player's FEET (player.position.y - player.eyeHeight) are above
+ * `maxY - 0.05`, we skip the horizontal push-out → player can stand/walk
+ * on top. This is what makes sandbags and crates "jumpable".
+ *
+ * Without `maxY` (legacy walls/cabin/board) the collider blocks at any
+ * height, preserving original behaviour. */
+function collidePoint(x, z, footY) {
   /* trees */
   for (const t of trees) {
     const dx = x - t.x, dz = z - t.z;
@@ -6019,6 +6201,10 @@ function collidePoint(x, z) {
   }
   /* AABBs */
   for (const c of colliders) {
+    /* Height-aware: if collider has a top (maxY) and player is above it,
+     * skip horizontal block. Allow a 0.05m grace so we don't pop in/out
+     * on tiny float jitter at the rim. */
+    if (c.maxY !== undefined && footY !== undefined && footY > c.maxY - 0.05) continue;
     const cx = (c.minX + c.maxX) / 2;
     const cz = (c.minZ + c.maxZ) / 2;
     const ex = (c.maxX - c.minX) / 2 + PLAYER_RADIUS;
@@ -6033,6 +6219,22 @@ function collidePoint(x, z) {
     }
   }
   return { x, z };
+}
+
+/* Standing/floor support for jumpable colliders. If the player is above a
+ * collider with `maxY`, treat its top as the floor — they can stand on top
+ * of crates / sandbags rather than falling through. Returns the highest
+ * supportive Y at (x,z) within the player radius, or null if none. */
+function collidersTopAt(x, z) {
+  let best = null;
+  for (const c of colliders) {
+    if (c.maxY === undefined) continue;
+    if (x >= c.minX - PLAYER_RADIUS && x <= c.maxX + PLAYER_RADIUS &&
+        z >= c.minZ - PLAYER_RADIUS && z <= c.maxZ + PLAYER_RADIUS) {
+      if (best === null || c.maxY > best) best = c.maxY;
+    }
+  }
+  return best;
 }
 
 /* ========================================================================
@@ -6124,14 +6326,23 @@ function updatePlayer(dt) {
   /* integrate */
   let nx = player.position.x + player.velocity.x * dt;
   let nz = player.position.z + player.velocity.z * dt;
-  const c = collidePoint(nx, nz);
+  /* Pass current foot Y so jumpable colliders (sandbags, crates) only block
+   * when the player is below their top — letting the player jump on top. */
+  const footY = player.position.y - player.eyeHeight;
+  const c = collidePoint(nx, nz, footY);
   nx = c.x; nz = c.z;
 
   player.position.x = nx;
   player.position.z = nz;
   player.position.y += player.velocity.y * dt;
 
-  const ground = terrainHeight(player.position.x, player.position.z) + player.eyeHeight;
+  /* Ground = max(terrain height, top of any jumpable collider underfoot).
+   * Eye-level is `ground + eyeHeight` so adding eyeHeight here keeps the
+   * camera at standing/crouching level above whatever surface we're on. */
+  const terrainY = terrainHeight(player.position.x, player.position.z);
+  const standOn  = collidersTopAt(player.position.x, player.position.z);
+  const surfaceY = (standOn !== null && standOn > terrainY) ? standOn : terrainY;
+  const ground = surfaceY + player.eyeHeight;
   if (player.position.y <= ground) {
     player.position.y = ground;
     player.velocity.y = 0;
@@ -7484,13 +7695,20 @@ function pickUpFromBoard(slot) {
       if (typeof playMedkit === 'function') { try { playMedkit(); } catch(_){} }
       return;
   }
-  /* Mark slot taken — hide miniature + dim its label */
-  slot.taken = true;
-  if (slot.obj) slot.obj.visible = false;
-  if (slot.label && slot.label.material && slot.label.material.opacity !== undefined) {
-    slot.label.material.transparent = true;
-    slot.label.material.opacity = 0.25;
-  }
+  /* Mark slot taken — hide miniature + dim its label.
+   * If a twin slot exists (mirror board in PvP), update it too so both
+   * boards reflect the same state. */
+  const _hide = (s) => {
+    if (!s) return;
+    s.taken = true;
+    if (s.obj) s.obj.visible = false;
+    if (s.label && s.label.material && s.label.material.opacity !== undefined) {
+      s.label.material.transparent = true;
+      s.label.material.opacity = 0.25;
+    }
+  };
+  _hide(slot);
+  _hide(slot._twin);
   if (typeof playMedkit === 'function') { try { playMedkit(); } catch(_){} }
 }
 
@@ -8253,8 +8471,9 @@ function applyDamageToPlayer(rawDmg, sourceWorldPos, dmgKind) {
 let _animFrame = 0;
 function animate() {
   requestAnimationFrame(animate);
-  if (document.hidden) {
-    /* Drain the clock so the next visible frame doesn't see a giant dt */
+  if (document.hidden || _ctxLost) {
+    /* Drain the clock so the next visible frame doesn't see a giant dt.
+     * Also paused when WebGL context is lost — resumes on contextrestored. */
     clock.getDelta();
     return;
   }
@@ -8340,9 +8559,13 @@ if (PVP_MODE) {
    * All objects are static scene-additions; colliders are registered so
    * they function as hard cover. Purely cosmetic — PvP auto-equips. */
   try {
-    /* 1. Mirror equipment board at spawn 2, facing +Z (toward player 2) */
+    /* 1. Mirror equipment board for spawn 2 (player 2 at z=-139.7).
+     *    Board placed at (0, -138.5) so it sits SOUTH of player 2 — when
+     *    player 2 starts with yaw=π (facing +Z south, toward combat) the
+     *    board appears 1.2m directly in front of them. rotY=π so the items
+     *    face north (-Z) i.e. toward player 2. */
     if (typeof mirrorEquipBoardAt === 'function') {
-      mirrorEquipBoardAt(0, -141.5, Math.PI);
+      mirrorEquipBoardAt(0, -138.5, Math.PI);
     }
     /* 2. Four decorative houses placed off the main corridor so they break
      *    long sight lines without walling off the whole arena. */
@@ -8643,11 +8866,19 @@ if (PVP_MODE) {
       _pvpOppDead = false;
       const rmsg = document.getElementById('pvp-round-msg');
       if (rmsg) rmsg.textContent = '';
-      /* Respawn at new spawn point */
+      /* Respawn at new spawn point + apply the spawn's initial yaw so the
+       * player faces the combat zone (player 2 spawns facing south). */
       const spawnIdx = msg.spawn;
       const spawnPos = PVP_SPAWNS[spawnIdx] || PVP_SPAWNS[0];
       player.position.copy(spawnPos);
       player.velocity.set(0, 0, 0);
+      const spawnYaw = (typeof PVP_SPAWN_YAWS !== 'undefined') ? (PVP_SPAWN_YAWS[spawnIdx] || 0) : 0;
+      try {
+        /* PointerLockControls drives camera.rotation directly (YXZ order),
+         * so we can write camera.rotation.y to set the initial heading. */
+        camera.rotation.y = spawnYaw;
+        camera.rotation.x = 0;
+      } catch(_){}
       player.health = player.maxHealth;
       player.armor = player.armorMax;
       if (player.inv.hasArmor) {

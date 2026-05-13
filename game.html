@@ -547,11 +547,12 @@ scene.fog = new THREE.Fog(0x8a929a, 60, 220);
 const camera = new THREE.PerspectiveCamera(78, window.innerWidth / window.innerHeight, 0.05, 600);
 camera.position.set(0, 1.7, 0);
 /* Apply initial yaw based on PvP spawn (player 2 faces south toward combat).
- * Done here so the first frame already shows the correct heading. */
-if (typeof PVP_MODE !== 'undefined' && PVP_MODE &&
-    typeof PVP_SPAWN_YAWS !== 'undefined' && typeof PVP_SPAWN !== 'undefined') {
+ * Done here so the first frame already shows the correct heading.
+ * NOTE: PVP_SPAWN_YAWS is declared further down with `const` (TDZ), so we
+ * inline the two values here instead of referencing that binding. */
+if (PVP_MODE) {
   camera.rotation.order = 'YXZ';
-  camera.rotation.y = PVP_SPAWN_YAWS[PVP_SPAWN] || 0;
+  camera.rotation.y = (PVP_SPAWN === 1) ? Math.PI : 0;
 }
 
 window.addEventListener('resize', () => {

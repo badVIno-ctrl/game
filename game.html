@@ -456,6 +456,18 @@
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+/* === POST-PROCESSING ================================================
+ * EffectComposer pipeline gives us bloom (gun-muzzle / sky highlights),
+ * tonemapped output, and shader AA. RoomEnvironment + PMREMGenerator
+ * provides IBL reflections on metallic materials (rifles, helmet rails)
+ * without shipping any external HDR file. */
+import { EffectComposer }    from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }        from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass }   from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass }        from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass }        from 'three/addons/postprocessing/OutputPass.js';
+import { FXAAShader }        from 'three/addons/shaders/FXAAShader.js';
+import { RoomEnvironment }   from 'three/addons/environments/RoomEnvironment.js';
 
 /* === PVP MODE DETECTION === */
 const _urlParams = new URLSearchParams(window.location.search);
@@ -559,6 +571,22 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  /* Mirror size into the post-processing chain — both composer + bloom
+   * keep their own internal render targets, and FXAA needs the new
+   * resolution uniform to avoid blurring. */
+  if (typeof composer !== 'undefined') {
+    composer.setSize(window.innerWidth, window.innerHeight);
+    if (typeof bloomPass !== 'undefined') {
+      bloomPass.setSize(window.innerWidth, window.innerHeight);
+    }
+    if (typeof fxaaPass !== 'undefined') {
+      const pr = Math.min(window.devicePixelRatio, 1.5);
+      fxaaPass.material.uniforms['resolution'].value.set(
+        1 / (window.innerWidth  * pr),
+        1 / (window.innerHeight * pr)
+      );
+    }
+  }
 });
 
 /* ========================================================================
@@ -574,7 +602,10 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xd6dde2, 0.95);
 sun.position.set(80, 120, 60);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+/* Shadow map bumped 1024 → 2048 for sharper contact shadows on weapons /
+ * helmet edges. With autoUpdate=false (re-rendered every 4 frames) the
+ * GPU cost is amortized — still cheap on a mid-range laptop. */
+sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -60;
 sun.shadow.camera.right = 60;
 sun.shadow.camera.top = 60;
@@ -582,6 +613,8 @@ sun.shadow.camera.bottom = -60;
 sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 240;
 sun.shadow.bias = -0.0003;
+sun.shadow.normalBias = 0.04;     /* anti-shadow-acne on slanted surfaces */
+sun.shadow.radius = 4;            /* extra PCF softness */
 scene.add(sun);
 scene.add(sun.target);
 
@@ -591,6 +624,65 @@ scene.add(ambient);
 
 /* Tone mapping exposure: comfortable mid-range so weapon and bots are visible */
 renderer.toneMappingExposure = 1.05;
+
+/* ========================================================================
+   IBL — image-based lighting via Three's RoomEnvironment
+   ------------------------------------------------------------------------
+   No external HDR file needed: RoomEnvironment is a procedural studio
+   environment baked at runtime. We render it once to a PMREM cubemap and
+   wire it into scene.environment so every MeshStandardMaterial gets
+   plausible specular reflections (rifle metal, helmet rails, goggles,
+   sandbag plastic). Dramatically lifts the "plastic toy" look without
+   any extra per-frame cost.
+   ======================================================================== */
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  /* RoomEnvironment in r0.160 takes no constructor args. */
+  const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = envTex;
+  /* Keep IBL subtle: 0.4 prevents fatigue/wood materials from looking
+   * waxy / over-lit. Metallic surfaces still pick up clear reflections. */
+  if ('environmentIntensity' in scene) scene.environmentIntensity = 0.4;
+  pmrem.dispose();
+}
+
+/* ========================================================================
+   POST-PROCESSING PIPELINE
+   ------------------------------------------------------------------------
+   1. RenderPass        — main scene → HDR buffer
+   2. UnrealBloomPass   — selective glow on bright pixels (muzzle flashes,
+                          sky highlights, tracers). Threshold high enough
+                          that diffuse surfaces don't glow.
+   3. FXAAShader        — cheap shader-AA; offsets MSAA being disabled on
+                          the renderer for performance.
+   4. OutputPass        — sRGB + ACES tonemapping (Three handles it here
+                          now that the composer owns final blit).
+   ======================================================================== */
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+/* Bloom: strength 0.45, radius 0.6, threshold 0.85 — gives a punchy but
+ * not "blown-out" look. Muzzle flashes & sky highlights pop, walls don't. */
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.45,   /* strength */
+  0.60,   /* radius   */
+  0.85    /* threshold */
+);
+composer.addPass(bloomPass);
+/* FXAA — single pass, sub-pixel edge smoothing */
+const fxaaPass = new ShaderPass(FXAAShader);
+fxaaPass.material.uniforms['resolution'].value.set(
+  1 / (window.innerWidth  * Math.min(window.devicePixelRatio, 1.5)),
+  1 / (window.innerHeight * Math.min(window.devicePixelRatio, 1.5))
+);
+composer.addPass(fxaaPass);
+/* Final tonemap + sRGB blit (handled by OutputPass since the composer
+ * internally uses linear half-float buffers when toneMapping is set on
+ * the renderer). */
+composer.addPass(new OutputPass());
 
 /* ========================================================================
    WEATHER — rain particles (light drizzle).
@@ -911,6 +1003,36 @@ ax.beginPath(); ax.moveTo(16, 0); ax.lineTo(22, 32); ax.lineTo(10, 32); ax.close
 const bladeAlpha = new THREE.CanvasTexture(aCv);
 bladeMat.alphaMap = bladeAlpha;
 
+/* === Wind shader injection ===========================================
+ * Each blade sways in the wind. We hook into the StandardMaterial via
+ * onBeforeCompile and offset the vertex position before view-matrix
+ * multiplication. The sway is keyed off (worldX + worldZ + time) so the
+ * field of grass moves like a single wind pattern crossing the map.
+ * Tip-only displacement (uv.y > 0.5) keeps the root anchored to the
+ * ground — no "floating" blades.
+ * `_windUniforms.uTime` is advanced from the main animate loop. */
+const _windUniforms = { uTime: { value: 0 } };
+bladeMat.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = _windUniforms.uTime;
+  shader.vertexShader =
+    'uniform float uTime;\n' +
+    shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      vec3 transformed = vec3( position );
+      // World-space position of this instance for spatial wind variation
+      vec4 worldPos = instanceMatrix * vec4(position, 1.0);
+      float windPhase = worldPos.x * 0.22 + worldPos.z * 0.18 + uTime * 1.6;
+      // Tip-only displacement: lower verts barely move, top sways.
+      float tipMask = max(0.0, position.y - 0.05) / 0.55;
+      float swayX = sin(windPhase) * 0.10 + sin(windPhase * 2.3) * 0.04;
+      float swayZ = cos(windPhase * 0.8) * 0.06;
+      transformed.x += swayX * tipMask;
+      transformed.z += swayZ * tipMask;
+      `
+    );
+};
+
 const GRASS_COUNT = 4000;
 const grassMesh = new THREE.InstancedMesh(bladeGeo, bladeMat, GRASS_COUNT);
 const dummy = new THREE.Object3D();
@@ -1003,17 +1125,33 @@ function addBarrel(x, z) {
 }
 
 function addRock(x, z) {
-  const g = new THREE.IcosahedronGeometry(0.7 + Math.random()*0.6, 0);
+  /* Radius of this specific rock — visual mesh & collider both derive
+   * from it so the player no longer phases into the visible boulder or
+   * hits an invisible "fat wall" around a small one. */
+  const radius = 0.7 + Math.random() * 0.6;
+  const g = new THREE.IcosahedronGeometry(radius, 0);
   const m = new THREE.MeshStandardMaterial({ color: 0x6e6c66, roughness: 1, flatShading: true });
   const mesh = new THREE.Mesh(g, m);
-  mesh.position.set(x, terrainHeight(x, z) + 0.4, z);
+  const groundY = terrainHeight(x, z);
+  /* Sink ~25% of the radius into the ground so rocks read as embedded
+   * boulders, then set the collider top to the highest visible point. */
+  const sink = radius * 0.25;
+  mesh.position.set(x, groundY + radius - sink, z);
   mesh.rotation.set(Math.random(), Math.random(), Math.random());
   mesh.castShadow = true; mesh.receiveShadow = true;
   scene.add(mesh);
   obstacles.push(mesh);
-  /* Tighter rock collider (was 0.7) so the player can squeeze past rocks
-   * that sit close to vehicles/walls. Visual mesh is unchanged. */
-  colliders.push({ minX: x - 0.5, maxX: x + 0.5, minZ: z - 0.5, maxZ: z + 0.5, obj: mesh });
+  /* Tight square collider sized to the actual mesh (icosa silhouette is
+   * ~0.78× the radius along the cardinal axes). `maxY` is the top of the
+   * rock so the player can step / jump on top and walk across instead of
+   * being blocked by an invisible vertical wall. */
+  const half = radius * 0.78;
+  const topY = groundY + (radius * 2 - sink);
+  colliders.push({
+    minX: x - half, maxX: x + half,
+    minZ: z - half, maxZ: z + half,
+    maxY: topY, obj: mesh
+  });
 }
 
 function addSandbagWall(cx, cz, dir = 0, count = 4) {
@@ -8925,7 +9063,14 @@ function animate() {
     renderer.shadowMap.needsUpdate = true;
   }
 
-  renderer.render(scene, camera);
+  /* Advance the wind clock — drives the grass sway shader. */
+  if (typeof _windUniforms !== 'undefined') {
+    _windUniforms.uTime.value += dt;
+  }
+
+  /* Route through the post-processing composer (bloom → FXAA → tonemap).
+   * `dt` lets passes with internal animation (none currently) advance. */
+  composer.render(dt);
 }
 animate();
 
@@ -9040,44 +9185,217 @@ if (PVP_MODE) {
 
   function createOpponentModel() {
     const g = new THREE.Group();
-    const blue = new THREE.MeshStandardMaterial({ color: 0x2060a0, roughness: 0.85 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xc89878, roughness: 0.7 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
-    /* Torso */
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.32), blue);
-    torso.position.y = 1.15; g.add(torso);
-    /* Vest */
-    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.5, 0.36),
-      new THREE.MeshStandardMaterial({ color: 0x2c2a26, roughness: 0.9 }));
-    vest.position.y = 1.2; g.add(vest);
-    /* Head */
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.30, 0.28), skin);
-    head.position.y = 1.65; g.add(head);
-    /* Helmet */
-    const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8, 0, Math.PI*2, 0, Math.PI/2),
-      new THREE.MeshStandardMaterial({ color: 0x3a4030, roughness: 0.85 }));
-    helmet.scale.set(1.05, 0.9, 1.15); helmet.position.y = 1.74; g.add(helmet);
-    /* Eyes */
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.04, 0.01), dark);
-    visor.position.set(0, 1.66, 0.142); g.add(visor);
-    /* Arms */
-    const armGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.55, 8);
-    const armL = new THREE.Mesh(armGeo, blue); armL.position.set(-0.34, 1.15, 0); g.add(armL);
-    const armR = new THREE.Mesh(armGeo, blue); armR.position.set(0.34, 1.15, 0); g.add(armR);
-    /* Hands */
-    const handGeo = new THREE.SphereGeometry(0.08, 8, 6);
-    g.add(new THREE.Mesh(handGeo, dark).translateX(-0.34).translateY(0.85));
-    g.add(new THREE.Mesh(handGeo, dark).translateX(0.34).translateY(0.85));
-    /* Legs */
-    const legGeo = new THREE.CylinderGeometry(0.10, 0.10, 0.8, 8);
-    const legMat = new THREE.MeshStandardMaterial({ color: 0x3a3528, roughness: 0.95 });
-    const legL = new THREE.Mesh(legGeo, legMat); legL.position.set(-0.13, 0.40, 0); g.add(legL);
-    const legR = legL.clone(); legR.position.x = 0.13; g.add(legR);
-    /* Boots */
-    const bootGeo = new THREE.BoxGeometry(0.18, 0.1, 0.28);
-    const bootMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
-    const bL = new THREE.Mesh(bootGeo, bootMat); bL.position.set(-0.13, 0.05, 0.04); g.add(bL);
-    const bR = bL.clone(); bR.position.x = 0.13; g.add(bR);
+
+    /* === Materials — modern infantry palette: muted multicam-ish khaki,
+     *      OD-green plate carrier, blackish gear & boots, neutral skin. */
+    const matFatigue = new THREE.MeshStandardMaterial({ color: 0x6e6a4a, roughness: 0.95 });
+    const matVest    = new THREE.MeshStandardMaterial({ color: 0x3a4032, roughness: 0.85 });
+    const matVestDark= new THREE.MeshStandardMaterial({ color: 0x252a20, roughness: 0.9  });
+    const matHelmet  = new THREE.MeshStandardMaterial({ color: 0x4a4e3c, roughness: 0.7  });
+    const matRubber  = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9  });
+    const matMetal   = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.4, metalness: 0.7 });
+    const matSkin    = new THREE.MeshStandardMaterial({ color: 0xb88a6a, roughness: 0.75 });
+    const matGoggle  = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.2, metalness: 0.6 });
+    const matBoot    = new THREE.MeshStandardMaterial({ color: 0x1c1813, roughness: 0.85 });
+    const matGlove   = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9  });
+    const matKnee    = new THREE.MeshStandardMaterial({ color: 0x2a2a25, roughness: 0.85 });
+
+    /* === TORSO — capsule under the plate carrier (this IS the hit-box for
+     *      chest shots; vest sits on top of it for visuals + extra hit area). */
+    const torso = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.22, 0.42, 6, 10),
+      matFatigue
+    );
+    torso.position.y = 1.20;
+    g.add(torso);
+
+    /* Plate carrier shell — slightly wider/flatter to read as armor */
+    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.58, 0.34), matVest);
+    vest.position.y = 1.22;
+    g.add(vest);
+    /* Front armor plate (darker inset) */
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.46, 0.04), matVestDark);
+    plate.position.set(0, 1.22, 0.18);
+    vest.add(plate);
+    /* Three MOLLE mag pouches across the front */
+    for (let i = -1; i <= 1; i++) {
+      const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.18, 0.06), matVestDark);
+      pouch.position.set(i * 0.15, 1.10, 0.21);
+      vest.add(pouch);
+    }
+    /* Shoulder straps */
+    const strapGeo = new THREE.BoxGeometry(0.12, 0.34, 0.05);
+    const strapL = new THREE.Mesh(strapGeo, matVest);
+    strapL.position.set(-0.20, 1.42, 0.05); strapL.rotation.z = 0.15; vest.add(strapL);
+    const strapR = strapL.clone(); strapR.position.x = 0.20; strapR.rotation.z = -0.15; vest.add(strapR);
+    /* Radio antenna on left shoulder */
+    const antenna = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.008, 0.012, 0.30, 6), matMetal
+    );
+    antenna.position.set(-0.22, 1.62, 0.05);
+    antenna.rotation.z = -0.18;
+    vest.add(antenna);
+
+    /* === NECK === */
+    const neck = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.08, 0.08, 8), matSkin
+    );
+    neck.position.y = 1.54;
+    g.add(neck);
+
+    /* === HEAD === — slightly tapered, more "skull-like" than a cube */
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 14, 12), matSkin
+    );
+    head.scale.set(1.0, 1.15, 1.05);
+    head.position.y = 1.66;
+    g.add(head);
+    /* Jaw / chin detail */
+    const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.16), matSkin);
+    jaw.position.set(0, 1.57, 0.02);
+    head.add(jaw);
+
+    /* === HELMET === — MICH-style: half-sphere shell + rim + side rails +
+     *      NVG mount on the front + chinstrap. Authored as one Mesh
+     *      (helmet) with cosmetic children so the headshot hit-test still
+     *      lands on a single object. */
+    const helmet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.16, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+      matHelmet
+    );
+    helmet.scale.set(1.08, 1.0, 1.18);
+    helmet.position.y = 1.74;
+    g.add(helmet);
+    /* Helmet rim — slightly flared bottom edge */
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.17, 0.014, 6, 18), matHelmet
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = -0.005;
+    rim.scale.set(1.0, 1.12, 1.0);
+    helmet.add(rim);
+    /* Side rails (left + right) — small rectangular bars */
+    const railGeo = new THREE.BoxGeometry(0.02, 0.025, 0.12);
+    const railL = new THREE.Mesh(railGeo, matMetal);
+    railL.position.set(-0.165, 0.04, 0); helmet.add(railL);
+    const railR = railL.clone(); railR.position.x = 0.165; helmet.add(railR);
+    /* NVG mount — a stubby block on the forehead */
+    const nvgBase = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 0.05), matMetal);
+    nvgBase.position.set(0, 0.04, 0.16);
+    helmet.add(nvgBase);
+    const nvgArm = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.06, 0.025), matMetal);
+    nvgArm.position.set(0, 0.08, 0.18);
+    helmet.add(nvgArm);
+    /* Chinstrap — thin strap visible along the jaw */
+    const strapGeoChin = new THREE.BoxGeometry(0.02, 0.10, 0.02);
+    const chinL = new THREE.Mesh(strapGeoChin, matVestDark);
+    chinL.position.set(-0.12, -0.05, 0.06); chinL.rotation.z = 0.4; helmet.add(chinL);
+    const chinR = chinL.clone();
+    chinR.position.x = 0.12; chinR.rotation.z = -0.4; helmet.add(chinR);
+
+    /* === FACE — ballistic goggles + half-face balaclava === */
+    const goggle = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.02), matGoggle);
+    goggle.position.set(0, 1.69, 0.122);
+    g.add(goggle);
+    /* Goggle strap wrapping around */
+    const goggleStrap = new THREE.Mesh(
+      new THREE.TorusGeometry(0.135, 0.012, 6, 18, Math.PI * 1.2),
+      matVestDark
+    );
+    goggleStrap.rotation.y = Math.PI / 2;
+    goggleStrap.rotation.x = Math.PI;
+    goggleStrap.position.set(0, 1.69, 0);
+    g.add(goggleStrap);
+    /* Balaclava covering the mouth */
+    const mask = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), matVestDark);
+    mask.scale.set(1.0, 0.55, 0.85);
+    mask.position.set(0, 1.585, 0.025);
+    g.add(mask);
+
+    /* === ARMS === — capsule upper arms + cylinder forearms + gloves */
+    function buildArm(side /* -1 left, +1 right */) {
+      const arm = new THREE.Group();
+      arm.position.set(side * 0.30, 1.40, 0);
+      /* Upper arm — slightly angled outward */
+      const upper = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.07, 0.26, 4, 8), matFatigue
+      );
+      upper.position.y = -0.14;
+      arm.add(upper);
+      /* Shoulder pad on top of the upper arm */
+      const pad = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 8), matVest);
+      pad.scale.set(1.0, 0.55, 1.0);
+      pad.position.y = 0.02;
+      arm.add(pad);
+      /* Forearm */
+      const fore = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.06, 0.22, 4, 8), matFatigue
+      );
+      fore.position.y = -0.42;
+      arm.add(fore);
+      /* Glove / fist */
+      const glove = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), matGlove);
+      glove.scale.set(1.0, 0.95, 1.15);
+      glove.position.y = -0.58;
+      arm.add(glove);
+      return { arm, hitMesh: upper };
+    }
+    const armLData = buildArm(-1);
+    const armRData = buildArm(+1);
+    g.add(armLData.arm); g.add(armRData.arm);
+    /* The variables used as hit targets must be Meshes. We expose the
+     * upper-arm capsule for arm-shot detection. The full group is used
+     * by the procedural animator to swing the limb at the shoulder. */
+    const armL = armLData.hitMesh;
+    const armR = armRData.hitMesh;
+    const armLGroup = armLData.arm;
+    const armRGroup = armRData.arm;
+
+    /* === LEGS === — capsule thighs + cylinder shins + knee pads + boots */
+    function buildLeg(side) {
+      const leg = new THREE.Group();
+      leg.position.set(side * 0.13, 0.85, 0);
+      /* Thigh */
+      const thigh = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.09, 0.32, 4, 8), matFatigue
+      );
+      thigh.position.y = -0.18;
+      leg.add(thigh);
+      /* Cargo pocket on the thigh — outer side */
+      const pocket = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.16, 0.06), matFatigue);
+      pocket.position.set(side * 0.10, -0.20, 0.02);
+      leg.add(pocket);
+      /* Knee pad */
+      const knee = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 8), matKnee);
+      knee.scale.set(1.0, 0.7, 1.1);
+      knee.position.set(0, -0.40, 0.04);
+      leg.add(knee);
+      /* Shin */
+      const shin = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.08, 0.30, 4, 8), matFatigue
+      );
+      shin.position.y = -0.58;
+      leg.add(shin);
+      /* Boot — upper + sole */
+      const bootUpper = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.30), matBoot);
+      bootUpper.position.set(0, -0.79, 0.05);
+      leg.add(bootUpper);
+      const bootSole = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.04, 0.32), matRubber);
+      bootSole.position.set(0, -0.85, 0.05);
+      leg.add(bootSole);
+      /* Boot toe cap (slightly raised front) */
+      const toe = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.10, 0.06), matBoot);
+      toe.position.set(0, -0.81, 0.20);
+      leg.add(toe);
+      return { leg, hitMesh: thigh };
+    }
+    const legLData = buildLeg(-1);
+    const legRData = buildLeg(+1);
+    g.add(legLData.leg); g.add(legRData.leg);
+    const legL = legLData.hitMesh;
+    const legR = legRData.hitMesh;
+    const legLGroup = legLData.leg;
+    const legRGroup = legRData.leg;
     /* Rifle holder — we swap between AK / M416 full models based on
      * opponent_state.w. The holder group handles positioning+rotation so the
      * child weapon mesh stays consistent regardless of which rifle is active. */
@@ -9135,8 +9453,15 @@ if (PVP_MODE) {
     _pvpOpp = {
       obj: g, head, torso, vest, helmet, armL, armR,
       legL, legR, hbBg, hbFg, label,
+      /* Limb GROUPS — used by the procedural animator to rotate at the
+       * shoulder / hip joint without disturbing the raycast hit meshes. */
+      armLGroup, armRGroup, legLGroup, legRGroup,
       rifleHolder, oppAk, oppM416, oppFlash, oppFlashMat,
       currentWeapon: 'ak',
+      /* Animation state — gait phase + last-known position for speed est */
+      _gait: 0,
+      _prevX: 0, _prevZ: 0,
+      _speed: 0,
       health: 100, maxHealth: 100
     };
     _pvpOppModel = g;
@@ -9442,6 +9767,50 @@ if (PVP_MODE) {
       /* First state packet — make the default weapon visible */
       if (_pvpOpp.oppAk)   _pvpOpp.oppAk.visible   = (r.w === 'ak');
       if (_pvpOpp.oppM416) _pvpOpp.oppM416.visible = (r.w === 'm416');
+    }
+
+    /* === PROCEDURAL ANIMATION =========================================
+     * Without a skeletal rig we approximate three motions:
+     *   1. Leg walk-cycle: hip rotation in X, phase = gait counter.
+     *   2. Idle body sway: small Y bob on the model root.
+     *   3. Head tracking the player so the opponent "looks at you".
+     * Speed is estimated from delta-position over `dt`, so the animation
+     * is self-driving — no extra netcode needed. */
+    if (!_pvpOppDead) {
+      const ox = _pvpOppModel.position.x;
+      const oz = _pvpOppModel.position.z;
+      const dx = ox - _pvpOpp._prevX;
+      const dz = oz - _pvpOpp._prevZ;
+      const instSpeed = Math.sqrt(dx*dx + dz*dz) / Math.max(dt, 0.001);
+      /* Low-pass the speed estimate so a single jittery packet doesn't
+       * make the legs twitch. */
+      _pvpOpp._speed = _pvpOpp._speed * 0.85 + instSpeed * 0.15;
+      _pvpOpp._prevX = ox;
+      _pvpOpp._prevZ = oz;
+
+      const moving = _pvpOpp._speed > 0.4;
+      if (moving) {
+        /* Gait advances faster the faster they run — natural cadence. */
+        _pvpOpp._gait += dt * (4.0 + Math.min(8.0, _pvpOpp._speed * 1.6));
+      } else {
+        /* Decay back toward neutral when idle so legs don't snap. */
+        _pvpOpp._gait *= 0.9;
+      }
+
+      const swing = moving ? 0.55 : 0.0;
+      const phase = _pvpOpp._gait;
+      if (_pvpOpp.legLGroup) _pvpOpp.legLGroup.rotation.x =  Math.sin(phase) * swing;
+      if (_pvpOpp.legRGroup) _pvpOpp.legRGroup.rotation.x = -Math.sin(phase) * swing;
+
+      /* Subtle vertical bob during walk (~3 cm). Skipped while idle. */
+      const bob = moving ? Math.abs(Math.sin(phase)) * 0.04 : 0;
+      _pvpOppModel.position.y += bob;
+
+      /* Idle weapon sway — slight roll on the rifle holder so it's
+       * never a perfectly rigid prop. */
+      if (_pvpOpp.rifleHolder) {
+        _pvpOpp.rifleHolder.rotation.z = Math.sin(_pvpOpp._gait * 0.6) * 0.04;
+      }
     }
 
     /* Hide opponent if dead */

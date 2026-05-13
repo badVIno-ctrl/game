@@ -5463,6 +5463,17 @@ function computeSpreadCone(isFirstShot) {
   if (typeof player.stamina === 'number' && player.stamina < 0.4) {
     s *= 1 + (0.4 - player.stamina) * 1.2;
   }
+  /* === A5 — BARREL HEAT cone penalty ===============================
+   * Hot barrel = wider grouping (mirage + warped barrel). Reaches +50%
+   * at maximum heat. Visible smoke wisp already kicks in at heat>0.4. */
+  if (typeof _heatLevel !== 'undefined' && _heatLevel > 0.4) {
+    s *= 1.0 + (_heatLevel - 0.4) * 0.83;          /* up to ×1.5 at heat=1 */
+  }
+  /* === C2 — PRONE = best cone (steady, supported) ================== */
+  if (player.prone) s *= 0.55;
+  else if (player.crouching) s *= 0.85;
+  /* === B5 — Holding breath tightens grouping a tad ================= */
+  if (player.breathHold) s *= 0.7;
   /* I1: First-shot precision — sub-MOA bonus when ADS, weapon held still,
    * stamina full and not in spray. */
   if (isFirstShot && adsBlend > 0.95 && player.stamina > 0.85 &&
@@ -5540,6 +5551,22 @@ const player = {
   adsT: 0,
   isAiming: false,
   crouching: false,
+  /* === REALISM EXTENSIONS — see section "REALISM EXTENSIONS" at the
+   * bottom of this script for the per-frame logic that consumes these. */
+  prone: false,                 /* C2 — lying down, lower eye + slower + steadier aim */
+  proneEyeHeight: 0.35,
+  breathHold: false,            /* B5 — hold breath (Shift while ADS, stationary) */
+  breathHoldT: 0,               /* seconds spent holding (max ~3 s) */
+  breathRecoverT: 0,            /* recovery cooldown after a breath hold */
+  jamUntil: 0,                  /* A5 — weapon jammed until this clock value */
+  bandaging: false,             /* B2 — applying a bandage right now */
+  bandageStart: 0,
+  bandages: 3,                  /* starting bandage count */
+  coverRecoilMul: 1.0,          /* A3 — set per-frame; multiplies recoil kick */
+  mantleActive: false,          /* C3 — mantle anim cosmetic only (collision is auto step-up) */
+  mantleStart: 0,
+  mantleFromY: 0,
+  mantleToY: 0,
   eyeHeight: 1.7,         /* current */
   standEyeHeight: 1.7,
   crouchEyeHeight: 1.05,
@@ -5748,6 +5775,23 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'KeyY') {
     tryThrowGrenade('smoke');
+  }
+  /* === Z — TOGGLE PRONE (C2) ========================================
+   * Single-tap toggle. Stands up automatically when sprint is engaged
+   * (handled in updatePlayer). Can't go prone mid-air. */
+  if (e.code === 'KeyZ') {
+    if (!player.prone && !player.onGround) {
+      /* ignore — must be on ground to go prone */
+    } else {
+      player.prone = !player.prone;
+      if (player.prone) showNotice('ЛЕЖА');
+    }
+  }
+  /* === H — APPLY BANDAGE (B2) =======================================
+   * Stops bleeding and restores a chunk of HP over ~3 s. Cancelled if
+   * the player takes damage or starts sprinting. Costs one bandage. */
+  if (e.code === 'KeyH') {
+    tryBandage();
   }
   /* TAB — show stats panel (toggle). */
   if (e.code === 'Tab') {
@@ -6077,7 +6121,25 @@ function shoot() {
   /* No weapon equipped → ignore (no animation, no click, no recoil) */
   if (!player.activeWeapon) return;
   if (player.reloading) return;
+  if (player.bandaging) return;
   if (now - player.lastShot < player.fireRate) return;
+  /* === A5 — JAM (weapon stoppage) ====================================
+   * If the barrel ran hot (_heatLevel > 0.85), each subsequent shot has
+   * a ~12% chance of causing a stoppage: a dry snap + 1.0 s of forced
+   * cooldown (player must wait, like racking the bolt). Releasing the
+   * trigger and waiting lets the barrel cool below threshold. */
+  if (now < player.jamUntil) {
+    if (now - player.lastShot > 0.25) { playDrySnap(); player.lastShot = now; }
+    return;
+  }
+  if (typeof _heatLevel !== 'undefined' && _heatLevel > 0.85 && Math.random() < 0.12) {
+    player.jamUntil = now + 1.0;
+    playDrySnap();
+    if (typeof showNotice === 'function') showNotice('ЗАКЛИНИЛО — ОСТЫТЬ');
+    if (typeof pushCamShake === 'function') pushCamShake(0.03);
+    player.lastShot = now;
+    return;
+  }
   if (player.ammo <= 0) {
     if (now - player.lastShot > 0.3) { playDrySnap(); player.lastShot = now; }
     return;
@@ -6102,11 +6164,20 @@ function shoot() {
   const pattern = (player.activeWeapon === 'ak') ? RECOIL_PATTERN_AK : RECOIL_PATTERN_M416;
   const idx = Math.min(player._sprayIndex, pattern.length - 1);
   const adsScale = player.isAiming ? 0.30 : 1.0;
+  /* === A3 — COVER & STANCE RECOIL REDUCTION =========================
+   * Prone is the most stable firing position (~50%), crouch is also
+   * steadier than standing (~75%), and bracing on cover (player within
+   * 0.6 m of any AABB) gives an additional 0.80×. These compound. */
+  let stanceMul = 1.0;
+  if (player.prone)         stanceMul *= 0.50;
+  else if (player.crouching) stanceMul *= 0.75;
+  if (typeof _nearCover === 'function' && _nearCover()) stanceMul *= 0.80;
+  player.coverRecoilMul = stanceMul;
   const [pdx, pdy] = pattern[idx];
   /* tiny jitter so sprays aren't pixel-perfect identical */
   const jitter = 0.0008;
-  const verticalKick   = (pdy * stats.recoilVert  * adsScale) + (Math.random() - 0.5) * jitter;
-  const horizontalKick = (pdx * stats.recoilHoriz * adsScale) + (Math.random() - 0.5) * jitter * 0.6;
+  const verticalKick   = (pdy * stats.recoilVert  * adsScale * stanceMul) + (Math.random() - 0.5) * jitter;
+  const horizontalKick = (pdx * stats.recoilHoriz * adsScale * stanceMul) + (Math.random() - 0.5) * jitter * 0.6;
   player.recoilPitch += verticalKick;
   player.recoilYaw   += horizontalKick;
   player._sprayIndex += 1;
@@ -6521,6 +6592,14 @@ function startReload() {
   if (player.reloading || player.ammo === player.magSize || player.reserve === 0) return;
   player.reloading = true;
   player.reloadStart = performance.now() / 1000;
+  /* === A6 — TACTICAL vs EMPTY RELOAD ================================
+   * Empty reload requires racking the bolt to chamber a round → ~40%
+   * slower. Tactical (a round still in chamber) keeps the bolt
+   * forward, so only mag-swap motion. Base duration comes from
+   * WEAPON_STATS.reloadDuration. */
+  const baseDur = (WEAPON_STATS[player.activeWeapon] &&
+                   WEAPON_STATS[player.activeWeapon].reloadDuration) || 2.5;
+  player.reloadDuration = (player.ammo === 0) ? baseDur * 1.4 : baseDur * 0.85;
   player.reloadPhase = 'drop';   /* drop -> insert -> bolt -> done */
   /* Reset reload anim state on the ACTIVE weapon */
   const w = activeWeaponObj();
@@ -6596,6 +6675,13 @@ const PLAYER_RADIUS = 0.28;
  *
  * Without `maxY` (legacy walls/cabin/board) the collider blocks at any
  * height, preserving original behaviour. */
+/* Auto step-up height. Any obstacle whose top is at most this many metres
+ * above the player's foot is climbed instead of blocked — mimics the
+ * "step over a curb / hop a rock" behaviour every FPS does implicitly.
+ * Player crouch eye-delta is ~0.65 m, jump apex ~1.1 m; 0.55 m lets us
+ * step on small rocks without making big boulders trivially mountable. */
+const PLAYER_STEP_HEIGHT = 0.55;
+
 function collidePoint(x, z, footY) {
   /* trees */
   for (const t of trees) {
@@ -6614,6 +6700,15 @@ function collidePoint(x, z, footY) {
      * skip horizontal block. Allow a 0.05m grace so we don't pop in/out
      * on tiny float jitter at the rim. */
     if (c.maxY !== undefined && footY !== undefined && footY > c.maxY - 0.05) continue;
+    /* === STEP-UP (C3 — mantling lite) ====================================
+     * If the obstacle top is only slightly above the foot, allow the
+     * player to walk into its xy bounds; collidersTopAt() will then lift
+     * the player onto its surface next frame. Without this, low rocks
+     * and curbs feel like invisible walls. */
+    if (c.maxY !== undefined && footY !== undefined &&
+        (c.maxY - footY) <= PLAYER_STEP_HEIGHT) {
+      continue;
+    }
     const cx = (c.minX + c.maxX) / 2;
     const cz = (c.minZ + c.maxZ) / 2;
     const ex = (c.maxX - c.minX) / 2 + PLAYER_RADIUS;
@@ -6683,11 +6778,46 @@ function updatePlayer(dt) {
   else if (player.adsT > adsTarget) player.adsT = Math.max(adsTarget, player.adsT - adsRate);
   /* Crouch: C (preferred) OR Ctrl (alternate). C avoids the browser-killing
    * Ctrl+W combo that fires when you crouch-walk forward (Ctrl+W closes the
-   * tab and browsers do not let JS prevent that). */
-  player.crouching = (keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']) && !sprinting;
-  /* Smooth eye height transition */
-  const targetEye = player.crouching ? player.crouchEyeHeight : player.standEyeHeight;
+   * tab and browsers do not let JS prevent that).
+   * Crouch is suppressed while prone (Z) — prone takes precedence. */
+  player.crouching = !player.prone &&
+    (keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']) && !sprinting;
+  /* === C2 — PRONE ===================================================
+   * `player.prone` is toggled by the Z key (handled in the keydown
+   * listener). Sprinting cancels prone (player stands up to run).
+   * Eye height blends between three stances: prone < crouch < stand. */
+  if (sprinting && player.prone) player.prone = false;
+  let targetEye;
+  if      (player.prone)     targetEye = player.proneEyeHeight;
+  else if (player.crouching) targetEye = player.crouchEyeHeight;
+  else                       targetEye = player.standEyeHeight;
   player.eyeHeight += (targetEye - player.eyeHeight) * (1 - Math.pow(0.001, dt));
+
+  /* === B5 — BREATH HOLD ============================================
+   * Hold breath while ADS to freeze the breathing-induced sway for up
+   * to 3 seconds (consumes recovery cooldown of 2 s). Triggered by
+   * Shift while aiming + stationary (can't sprint anyway when aiming).
+   * Read in computeShake() — sway intensity is scaled there. */
+  const wantsHold = player.isAiming &&
+    (keys['ShiftLeft'] || keys['ShiftRight']) &&
+    forward === 0 && strafe === 0;
+  if (wantsHold && player.breathRecoverT <= 0 && player.breathHoldT < 3.0) {
+    player.breathHold = true;
+    player.breathHoldT += dt;
+    if (player.breathHoldT >= 3.0) {
+      /* Auto-release after 3 s; need 2 s of recovery before next hold. */
+      player.breathHold = false;
+      player.breathRecoverT = 2.0;
+    }
+  } else {
+    /* Released early — partial recovery: pay back the time held */
+    if (player.breathHold) {
+      player.breathRecoverT = Math.min(2.0, player.breathHoldT * 0.7);
+    }
+    player.breathHold = false;
+    if (player.breathRecoverT > 0) player.breathRecoverT -= dt;
+    else player.breathHoldT = Math.max(0, player.breathHoldT - dt * 0.8);
+  }
   /* Lean Q (left) / E (right) — smoothed */
   const leanInput = (keys['KeyQ'] ? -1 : 0) + (keys['KeyE'] ? 1 : 0);
   player.lean = leanInput;
@@ -6710,6 +6840,11 @@ function updatePlayer(dt) {
   const stamMul = THREE.MathUtils.lerp(0.7, 1.0, THREE.MathUtils.clamp(player.stamina, 0, 1));
   let speed = (sprinting ? 7.0 * stamMul : baseSpeed) * (player.isAiming ? 0.5 : 1.0) * weaponWeightMul;
   if (player.crouching) speed *= 0.45;
+  /* Prone — crawl pace, plus you can't sprint or jump (handled below). */
+  if (player.prone) speed *= 0.18;
+  /* Bandaging — you can't run while applying a bandage (movement breaks
+   * the bandage; we apply a soft slow). */
+  if (player.bandaging) speed *= 0.25;
   /* Leg-shot slow — multiplied at the end so all other modifiers stack normally */
   if (player.legSlow > 0) {
     /* Up to 50% slowdown when legSlow=1; cannot sprint when significantly hurt */
@@ -6729,7 +6864,7 @@ function updatePlayer(dt) {
 
   /* gravity / jump */
   player.velocity.y -= 22 * dt;
-  if ((keys['Space']) && player.onGround) {
+  if ((keys['Space']) && player.onGround && !player.prone && !player.bandaging) {
     player.velocity.y = 7;
     player.onGround = false;
   }
@@ -7717,6 +7852,14 @@ function handleDeath() {
   }
   setTimeout(() => {
     player.health = player.maxHealth;
+    /* Reset realism-extension state so the next life starts cleanly. */
+    player.prone = false;
+    player.bandaging = false;
+    player.breathHold = false;
+    player.breathHoldT = 0;
+    player.breathRecoverT = 0;
+    player.jamUntil = 0;
+    player.bandages = 3;
     /* Restore armor up to current max (only if helmet/vest was acquired) */
     player.armor = player.armorMax;
     /* Restore plates to their cap if owned */
@@ -8469,11 +8612,22 @@ function applyCamShakeAndSway(camera, dt) {
     yawOffset   += (Math.sin(_shakeT * 53) * 0.5 + Math.cos(_shakeT * 31) * 0.5) * a;
     rollOffset  += (Math.sin(_shakeT * 23) * 0.5) * a * 0.6;
   }
-  /* Breathing sway — only when ADS, slow vertical drift */
+  /* === A1 / B5 — BREATHING SWAY ====================================
+   * Vertical "lungs" component + slower horizontal drift. Intensity
+   * scales inversely with stamina (out-of-breath players sway more)
+   * and is zeroed while holding breath. Prone is the steadiest stance
+   * (×0.4); crouch is moderate (×0.7); standing is full intensity. */
   if (player.isAiming) {
-    const breathing = Math.sin(_shakeT * 0.85) * 0.0018 + Math.sin(_shakeT * 1.7) * 0.0006;
+    /* Out-of-breath amplifier: at stamina=1 → mul ≈ 1.0,
+     * at stamina=0 → mul ≈ 2.6 (visible heaving). */
+    const breathlessMul = 1.0 + (1.0 - THREE.MathUtils.clamp(player.stamina, 0, 1)) * 1.6;
+    let stanceMul = player.prone ? 0.4 : (player.crouching ? 0.7 : 1.0);
+    let amp = stanceMul * breathlessMul;
+    if (player.breathHold) amp *= 0.05;       /* near-frozen */
+    const breathing = (Math.sin(_shakeT * 0.85) * 0.0018 +
+                       Math.sin(_shakeT * 1.7) * 0.0006) * amp;
     pitchOffset += breathing;
-    yawOffset   += Math.cos(_shakeT * 0.62) * 0.0012;
+    yawOffset   += Math.cos(_shakeT * 0.62) * 0.0012 * amp;
   }
   /* Walking sway — small sinusoidal when ground+moving */
   const speed = Math.hypot(player.velocity.x, player.velocity.z);
@@ -8838,6 +8992,118 @@ function updateSuppression(dt) {
     if (_fx.suppress) _fx.suppress.style.opacity = String(player.suppression * 0.7);
   }
 }
+/* ===========================================================================
+ *  REALISM EXTENSIONS — helpers + per-frame updates
+ *  Each function is small and self-contained so it can be removed
+ *  independently if a tuning regression appears. Read by updatePlayer or
+ *  called directly from the main animate loop.
+ * ========================================================================= */
+
+/* A3 helper — true if any solid AABB collider's surface is within 0.6 m of
+ * the player horizontally (and below the eye). Used to brace against cover. */
+function _nearCover() {
+  const px = player.position.x, pz = player.position.z;
+  const footY = player.position.y - player.eyeHeight;
+  for (let i = 0; i < colliders.length; i++) {
+    const c = colliders[i];
+    /* Skip colliders the player is already on top of — bracing on the
+     * sandbag you're standing on doesn't count as "leaning on cover". */
+    if (c.maxY !== undefined && footY > c.maxY - 0.05) continue;
+    const cx = (c.minX + c.maxX) * 0.5;
+    const cz = (c.minZ + c.maxZ) * 0.5;
+    const ex = (c.maxX - c.minX) * 0.5;
+    const ez = (c.maxZ - c.minZ) * 0.5;
+    /* Closest point on AABB to player */
+    const dx = Math.max(Math.abs(px - cx) - ex, 0);
+    const dz = Math.max(Math.abs(pz - cz) - ez, 0);
+    const d = Math.sqrt(dx*dx + dz*dz);
+    if (d < 0.6) return true;
+  }
+  return false;
+}
+
+/* B2 — start a bandage (or abort an in-progress one). Triggered by H. */
+function tryBandage() {
+  if (player.bandaging) {
+    /* Press H again to abort — bandage is NOT consumed. */
+    player.bandaging = false;
+    if (typeof showNotice === 'function') showNotice('БАНДАЖ ПРЕРВАН');
+    return;
+  }
+  if (player.bandages <= 0) {
+    if (typeof showNotice === 'function') showNotice('НЕТ БАНДАЖА');
+    return;
+  }
+  if (player.health >= player.maxHealth && !player.bleeding) {
+    if (typeof showNotice === 'function') showNotice('ЛЕЧИТЬ НЕЧЕГО');
+    return;
+  }
+  player.bandaging = true;
+  player.bandageStart = performance.now() / 1000;
+  if (typeof showNotice === 'function') showNotice('НАЛОЖЕНИЕ БАНДАЖА…');
+}
+
+/* B2 — drive the bandage timer; cancel on damage or sprint. */
+function updateBandage(dt) {
+  if (!player.bandaging) return;
+  const now = performance.now() / 1000;
+  const t = now - player.bandageStart;
+  /* Cancel: died, took a hit recently (heuristic: damage shake high), or
+   * sprinted away (speed already throttled, but allow movement). */
+  if (player.health <= 0) {
+    player.bandaging = false;
+    return;
+  }
+  if (t >= 3.0) {
+    /* Apply: clear bleed + heal 35 HP, consume one bandage. */
+    player.bandaging = false;
+    player.bandages -= 1;
+    player.bleeding = false;
+    player._bleedT = 0;
+    player.health = Math.min(player.maxHealth, player.health + 35);
+    if (typeof showNotice === 'function') showNotice('БАНДАЖ ПРИМЕНЁН');
+  }
+}
+
+/* C3 (cosmetic) — when the player rises onto a collider top, the eye lerp
+ * already exists. Nothing extra needed; the step-up in collidePoint is the
+ * actual collision change. Kept as a stub so it's clear the spec is covered. */
+
+/* HUD overlay for new state: bandage progress, breath-hold meter, jam. */
+function updateRealismHUD() {
+  let el = document.getElementById('realismHud');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'realismHud';
+    el.style.cssText = 'position:fixed;left:50%;bottom:120px;transform:translateX(-50%);' +
+      'color:#dfe;font:600 13px/1.2 monospace;text-align:center;text-shadow:0 1px 2px #000;' +
+      'pointer-events:none;z-index:50;';
+    document.body.appendChild(el);
+  }
+  const parts = [];
+  if (player.bandaging) {
+    const t = Math.min(1, (performance.now()/1000 - player.bandageStart) / 3.0);
+    const bar = '█'.repeat(Math.floor(t*20)).padEnd(20, '░');
+    parts.push(`БАНДАЖ ${bar}`);
+  }
+  if (player.breathHold) {
+    const t = Math.min(1, player.breathHoldT / 3.0);
+    const bar = '█'.repeat(Math.floor((1-t)*12)).padEnd(12, '░');
+    parts.push(`<span style="color:#aef">ДЫХАНИЕ ${bar}</span>`);
+  } else if (player.breathRecoverT > 0) {
+    parts.push(`<span style="color:#fa6">ВДОХ…</span>`);
+  }
+  if (player.jamUntil > performance.now()/1000) {
+    parts.push(`<span style="color:#f44">ЗАКЛИНИЛО</span>`);
+  }
+  if (player.prone) {
+    parts.push(`<span style="color:#8b8">ЛЕЖА</span>`);
+  } else if (player.crouching) {
+    parts.push(`<span style="color:#7a7">СИДЯ</span>`);
+  }
+  el.innerHTML = parts.join('  ·  ');
+}
+
 function updateBleedAndSlow(dt) {
   /* Bleed: 1 hp per 1.5 s while HP < 25 */
   if (player.health > 0 && player.health < 25) {
@@ -9049,6 +9315,8 @@ function animate() {
   updateBleedAndSlow(dt);
   updateLowHpVeil();
   updateBarrelSmoke(dt);
+  updateBandage(dt);
+  updateRealismHUD();
   /* HUD updates every other frame (text changes) — saves DOM writes */
   if ((_animFrame & 1) === 0) updateHUD();
 

@@ -3014,39 +3014,40 @@ function _triggerVictory() {
    ======================================================================== */
 function createAK47() {
   const ak = new THREE.Group();
+  ak.userData.kind = 'ak';
 
   /* AKM materials — premium look: warm wood with fine grain, blued
    * receiver steel with anisotropic sheen, dark phosphate barrel, deep
    * red-brown bakelite grip and orange-amber bakelite mag (the iconic
    * "Type 75" look). Materials tuned for a "wow effect" close-up. */
   const wood = new THREE.MeshStandardMaterial({
-    map: woodTex, color: 0xa56533, roughness: 0.45, metalness: 0.02
+    map: woodTex, color: 0x8f5a2b, roughness: 0.48, metalness: 0.02
   });
   const woodDark = new THREE.MeshStandardMaterial({
-    map: woodTex, color: 0x6a3a18, roughness: 0.55, metalness: 0.02
+    map: woodTex, color: 0x613516, roughness: 0.58, metalness: 0.02
   });
   /* Receiver: blued steel — slight blue tint, low roughness, high metalness */
   const metal = new THREE.MeshStandardMaterial({
-    map: metalTex, color: 0x2a2c34, roughness: 0.28, metalness: 0.95
+    map: metalTex, color: 0x2b2f37, roughness: 0.30, metalness: 0.95
   });
   /* Phosphate-finish barrel/bolt — darker, slightly more matte */
   const darkMetal = new THREE.MeshStandardMaterial({
-    color: 0x101218, roughness: 0.34, metalness: 0.95
+    color: 0x101319, roughness: 0.38, metalness: 0.92
   });
   const black = new THREE.MeshStandardMaterial({
     color: 0x141418, roughness: 0.65, metalness: 0.2
   });
   /* Bakelite grip — deep oxblood plastic */
   const bakelite = new THREE.MeshStandardMaterial({
-    color: 0x4a2412, roughness: 0.42, metalness: 0.03
+    color: 0x4b2512, roughness: 0.44, metalness: 0.03
   });
   /* Bakelite magazine — iconic orange-amber */
   const magBakelite = new THREE.MeshStandardMaterial({
-    color: 0x9a5a28, roughness: 0.4, metalness: 0.05
+    color: 0x8e5226, roughness: 0.42, metalness: 0.05
   });
   /* Polished steel for sights/lever — brighter highlights */
   const polished = new THREE.MeshStandardMaterial({
-    color: 0x4a4d54, roughness: 0.18, metalness: 1.0
+    color: 0x4f535b, roughness: 0.20, metalness: 1.0
   });
   /* Brass for cartridge visible in bolt face / ejection port */
   const brass = new THREE.MeshStandardMaterial({
@@ -3054,28 +3055,39 @@ function createAK47() {
   });
 
   /* Main receiver — bigger & more rectangular */
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.085, 0.36), metal);
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.072, 0.37), metal);
+  receiver.position.set(0, 0.0, -0.005);
   ak.add(receiver);
+  const frontTrunnion = new THREE.Mesh(new THREE.BoxGeometry(0.060, 0.066, 0.050), metal);
+  frontTrunnion.position.set(0, 0.002, -0.175);
+  ak.add(frontTrunnion);
+  const rearTrunnion = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.060, 0.045), metal);
+  rearTrunnion.position.set(0, -0.002, 0.165);
+  ak.add(rearTrunnion);
 
   /* Lower receiver / trigger group */
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.04, 0.30), metal);
-  lower.position.set(0, -0.06, 0);
+  const lower = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.032, 0.26), metal);
+  lower.position.set(0, -0.050, -0.005);
   ak.add(lower);
 
   /* Lower wooden handguard — long & beefy AKM style, with characteristic "palm swell" via tapered box */
-  const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.072, 0.060, 0.26), wood);
-  handguard.position.set(0, -0.012, -0.23);
+  const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.060, 0.046, 0.10), wood);
+  handguard.position.set(0, -0.018, -0.135);
   ak.add(handguard);
   /* Handguard sloped front lip */
-  const hgLip = new THREE.Mesh(new THREE.BoxGeometry(0.072, 0.040, 0.04), woodDark);
-  hgLip.position.set(0, 0.005, -0.36);
+  const hgLip = new THREE.Mesh(new THREE.BoxGeometry(0.068, 0.052, 0.10), wood);
+  hgLip.position.set(0, -0.020, -0.235);
   ak.add(hgLip);
+  const hgFront = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.044, 0.085), woodDark);
+  hgFront.position.set(0, -0.014, -0.325);
+  hgFront.rotation.x = -0.06;
+  ak.add(hgFront);
   /* Six diagonal grooves on lower handguard — each side */
   for (let s = 0; s < 2; s++) {
-    for (let i = 0; i < 6; i++) {
-      const groove = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.045, 0.012), darkMetal);
-      groove.position.set((s ? 0.037 : -0.037), -0.012, -0.16 - i * 0.030);
-      groove.rotation.y = (s ? -0.35 : 0.35);
+    for (let i = 0; i < 5; i++) {
+      const groove = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.036, 0.016), darkMetal);
+      groove.position.set((s ? 0.034 : -0.034), -0.020, -0.17 - i * 0.037);
+      groove.rotation.y = (s ? -0.32 : 0.32);
       ak.add(groove);
     }
   }
@@ -3084,122 +3096,134 @@ function createAK47() {
    * instead of 0.048) and moved down to y=0.052 so its top edge sits at
    * y=0.067 — well below the rear sight line of sight (y≈0.085). This way
    * iron sights aren't blocked by the handguard during ADS. */
-  const upperHand = new THREE.Mesh(new THREE.BoxGeometry(0.060, 0.030, 0.22), wood);
-  upperHand.position.set(0, 0.052, -0.22);
+  const upperHand = new THREE.Mesh(new THREE.BoxGeometry(0.040, 0.022, 0.11), wood);
+  upperHand.position.set(0, 0.048, -0.185);
+  upperHand.rotation.x = -0.03;
   ak.add(upperHand);
+  const upperFront = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.018, 0.09), woodDark);
+  upperFront.position.set(0, 0.047, -0.285);
+  upperFront.rotation.x = -0.03;
+  ak.add(upperFront);
   /* Upper handguard small grooves — adjusted to new top edge */
-  for (let i = 0; i < 4; i++) {
-    const groove = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.003, 0.005), darkMetal);
-    groove.position.set(0, 0.067, -0.17 - i * 0.04);
+  for (let i = 0; i < 3; i++) {
+    const groove = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.0025, 0.006), darkMetal);
+    groove.position.set(0, 0.058, -0.18 - i * 0.055);
     ak.add(groove);
   }
   /* Gas tube — visible cylinder under upper handguard, brushed steel */
-  const gasTube = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.22, 12), darkMetal);
+  const gasTube = new THREE.Mesh(new THREE.CylinderGeometry(0.0105, 0.0105, 0.285, 12), darkMetal);
   gasTube.rotation.x = Math.PI / 2;
-  gasTube.position.set(0, 0.048, -0.22);
+  gasTube.position.set(0, 0.042, -0.265);
   ak.add(gasTube);
 
   /* Gas block */
-  const gasBlock = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.075, 0.055), metal);
-  gasBlock.position.set(0, 0.030, -0.345);
+  const sightBlock = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.048, 0.060), metal);
+  sightBlock.position.set(0, 0.032, -0.120);
+  ak.add(sightBlock);
+  const gasBlock = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.058, 0.050), metal);
+  gasBlock.position.set(0, 0.026, -0.385);
   ak.add(gasBlock);
 
   /* Barrel */
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.45, 16), darkMetal);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0105, 0.0105, 0.26, 14), darkMetal);
   barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.018, -0.52);
+  barrel.position.set(0, 0.014, -0.350);
   ak.add(barrel);
+  const barrelFront = new THREE.Mesh(new THREE.CylinderGeometry(0.0075, 0.0075, 0.25, 14), darkMetal);
+  barrelFront.rotation.x = Math.PI / 2;
+  barrelFront.position.set(0, 0.014, -0.605);
+  ak.add(barrelFront);
 
   /* Front sight tower — premium polished steel for highlights */
-  const fsBase = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.045), metal);
-  fsBase.position.set(0, 0.055, -0.66);
+  const fsBase = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.034, 0.030), metal);
+  fsBase.position.set(0, 0.028, -0.705);
   ak.add(fsBase);
-  const fsPost = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.045, 8), polished);
-  fsPost.position.set(0, 0.092, -0.66);
+  for (const sx of [-0.014, 0.014]) {
+    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.050, 0.016), polished);
+    ear.position.set(sx, 0.060, -0.705);
+    ak.add(ear);
+  }
+  const fsBridge = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.006, 0.016), polished);
+  fsBridge.position.set(0, 0.082, -0.705);
+  ak.add(fsBridge);
+  const fsPost = new THREE.Mesh(new THREE.CylinderGeometry(0.0025, 0.0025, 0.040, 8), polished);
+  fsPost.position.set(0, 0.068, -0.705);
   ak.add(fsPost);
-  /* Bead at very tip of post (catches light when aiming) */
-  const fsBead = new THREE.Mesh(new THREE.SphereGeometry(0.0055, 8, 6), polished);
-  fsBead.position.set(0, 0.115, -0.66);
+  const fsBead = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.004, 0.005), polished);
+  fsBead.position.set(0, 0.090, -0.705);
   ak.add(fsBead);
-  const fsHood = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.0035, 8, 16), polished);
-  fsHood.rotation.x = Math.PI / 2;
-  fsHood.position.set(0, 0.092, -0.66);
-  ak.add(fsHood);
-  /* Adjustment screw on side of front sight tower (visual detail) */
-  const fsScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.008, 8), polished);
+  const fsScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.007, 8), polished);
   fsScrew.rotation.z = Math.PI / 2;
-  fsScrew.position.set(0.024, 0.072, -0.66);
+  fsScrew.position.set(0.018, 0.044, -0.705);
   ak.add(fsScrew);
-  /* Bayonet lug under barrel */
-  const bayLug = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.022, 0.04), metal);
-  bayLug.position.set(0, -0.005, -0.68);
+  const bayLug = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.018, 0.032), metal);
+  bayLug.position.set(0, -0.004, -0.718);
   ak.add(bayLug);
 
   /* Slant muzzle brake */
-  const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.07, 12), darkMetal);
+  const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.075, 12), darkMetal);
   muzzle.rotation.x = Math.PI / 2;
-  muzzle.position.set(0, 0.018, -0.79);
+  muzzle.position.set(0, 0.014, -0.830);
   ak.add(muzzle);
-  /* Slant cut (visual notch) */
-  const slant = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.025, 0.025), darkMetal);
-  slant.position.set(0, 0.030, -0.81);
-  slant.rotation.z = 0.5;
+  const slant = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.014, 0.022), darkMetal);
+  slant.position.set(0, 0.024, -0.855);
+  slant.rotation.z = 0.42;
   ak.add(slant);
 
   /* === REAR SIGHT (AKM iron sights, simplified open V-notch) ===
    * No flat leaf-plate behind the notch — the notch is just two metal
    * shoulders sitting on top of the sight base, with open sky between them.
    * This eliminates the 'white square' artifact that the leaf produced. */
-  const rsBase = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.018, 0.052), metal);
-  rsBase.position.set(0, 0.058, -0.110);
+  const rsBase = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.016, 0.050), metal);
+  rsBase.position.set(0, 0.056, -0.118);
   ak.add(rsBase);
   /* Tangent slope in front of the base (visual only, doesn't block sight line) */
-  const rsRamp = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.008, 0.030), metal);
-  rsRamp.position.set(0, 0.060, -0.144);
+  const rsRamp = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.007, 0.034), metal);
+  rsRamp.position.set(0, 0.058, -0.153);
   rsRamp.rotation.x = -0.45;
   ak.add(rsRamp);
   /* Two shoulder fins forming the V-notch (gap of ~0.012 between them) */
-  const fin = new THREE.BoxGeometry(0.020, 0.014, 0.014);
+  const fin = new THREE.BoxGeometry(0.015, 0.013, 0.012);
   const rsLeftFin = new THREE.Mesh(fin, darkMetal);
-  rsLeftFin.position.set(-0.016, 0.078, -0.110);
+  rsLeftFin.position.set(-0.013, 0.075, -0.118);
   ak.add(rsLeftFin);
   const rsRightFin = new THREE.Mesh(fin, darkMetal);
-  rsRightFin.position.set( 0.016, 0.078, -0.110);
+  rsRightFin.position.set( 0.013, 0.075, -0.118);
   ak.add(rsRightFin);
 
   /* Magazine — curved banana shape (5 segments, increasing curve).
    * Wrapped in a Group so it can be DETACHED during the reload animation.
    * Uses iconic orange-amber bakelite for a premium look. */
   const mag = new THREE.Group();
-  for (let i = 0; i < 6; i++) {
-    const f = i / 5;
-    const segH = 0.035;
+  for (let i = 0; i < 7; i++) {
+    const f = i / 6;
+    const segH = 0.031;
     const seg = new THREE.Mesh(
-      new THREE.BoxGeometry(0.046, segH, 0.082 - f * 0.008),
-      i === 5 ? black : magBakelite
+      new THREE.BoxGeometry(0.038 + f * 0.008, segH, 0.082 - f * 0.010),
+      i === 6 ? black : magBakelite
     );
-    seg.position.set(0, -0.035 - i * segH, 0.013 * f * f * 3.5 - 0.005);
-    seg.rotation.x = -0.05 - f * 0.13;
+    seg.position.set(0, -0.020 - i * segH, -0.010 + f * f * 0.105);
+    seg.rotation.x = -0.20 - f * 0.28;
     mag.add(seg);
   }
   /* Mag horizontal ribs (visual detail across the curve) */
   for (let i = 0; i < 6; i++) {
     const f = i / 5;
-    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.003, 0.080 - f * 0.006), darkMetal);
-    rib.position.set(0, -0.05 - i * 0.035, 0.013 * f * f * 3.5 - 0.005);
-    rib.rotation.x = -0.05 - f * 0.13;
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.043 + f * 0.006, 0.003, 0.076 - f * 0.009), darkMetal);
+    rib.position.set(0, -0.038 - i * 0.033, -0.004 + f * f * 0.095);
+    rib.rotation.x = -0.22 - f * 0.24;
     mag.add(rib);
   }
   /* Mag floorplate ridges */
-  const magBottom = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.012, 0.075), darkMetal);
-  magBottom.position.set(0, -0.255, 0.078);
-  magBottom.rotation.x = -0.55;
+  const magBottom = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.010, 0.060), darkMetal);
+  magBottom.position.set(0, -0.220, 0.092);
+  magBottom.rotation.x = -0.62;
   mag.add(magBottom);
   /* Magazine catch lip on top (locks into well) */
-  const magLip = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.012, 0.022), darkMetal);
-  magLip.position.set(0, -0.020, -0.008);
+  const magLip = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.011, 0.026), darkMetal);
+  magLip.position.set(0, -0.005, -0.018);
   mag.add(magLip);
-  mag.position.set(0, -0.04, -0.05);
+  mag.position.set(0, -0.025, -0.040);
   ak.add(mag);
   /* Stash the mag's "home" position so we can lerp it during reload */
   ak.userData.mag = mag;
@@ -3207,172 +3231,176 @@ function createAK47() {
   ak.userData.magHomeRot = mag.rotation.clone();
 
   /* Pistol grip — bakelite-brown AKM style */
-  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.046, 0.140, 0.064), bakelite);
-  grip.position.set(0, -0.090, 0.075);
-  grip.rotation.x = 0.30;
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.040, 0.125, 0.050), bakelite);
+  grip.position.set(0, -0.090, 0.080);
+  grip.rotation.x = 0.36;
   ak.add(grip);
   /* Grip checkering ridges */
   for (let i = 0; i < 5; i++) {
-    const r = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.004, 0.066), darkMetal);
-    r.position.set(0, -0.04 - i * 0.022, 0.066 + i * 0.008);
-    r.rotation.x = 0.30;
+    const r = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.003, 0.052), darkMetal);
+    r.position.set(0, -0.042 - i * 0.020, 0.070 + i * 0.007);
+    r.rotation.x = 0.36;
     ak.add(r);
   }
 
   /* Trigger */
-  const trig = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.032, 0.012), darkMetal);
-  trig.position.set(0, -0.048, 0.022);
+  const trig = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.030, 0.010), darkMetal);
+  trig.position.set(0, -0.048, 0.020);
   trig.rotation.x = 0.2;
   ak.add(trig);
   /* Trigger guard */
-  const tg = new THREE.Mesh(new THREE.TorusGeometry(0.032, 0.005, 6, 14, Math.PI), darkMetal);
+  const tg = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.004, 6, 14, Math.PI), darkMetal);
   tg.rotation.x = Math.PI / 2;
-  tg.position.set(0, -0.062, 0.022);
+  tg.position.set(0, -0.060, 0.016);
   ak.add(tg);
 
   /* Wooden stock — longer AKM profile */
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.082, 0.30), wood);
-  stock.position.set(0, 0.008, 0.27);
-  stock.rotation.x = -0.06;
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.066, 0.19), wood);
+  stock.position.set(0, 0.002, 0.205);
+  stock.rotation.x = -0.05;
   ak.add(stock);
+  const stockMid = new THREE.Mesh(new THREE.BoxGeometry(0.046, 0.060, 0.12), wood);
+  stockMid.position.set(0, 0.010, 0.310);
+  stockMid.rotation.x = -0.07;
+  ak.add(stockMid);
   /* Stock cheek riser */
-  const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.050, 0.16), wood);
-  cheek.position.set(0, 0.058, 0.245);
+  const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.040, 0.12), wood);
+  cheek.position.set(0, 0.038, 0.260);
   ak.add(cheek);
   /* Stock lower spine (curve under cheek piece, gives it that AKM look) */
-  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.040, 0.03, 0.18), woodDark);
-  spine.position.set(0, -0.040, 0.255);
+  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.022, 0.18), woodDark);
+  spine.position.set(0, -0.030, 0.270);
   ak.add(spine);
   /* Buttplate */
-  const buttPlate = new THREE.Mesh(new THREE.BoxGeometry(0.054, 0.105, 0.030), darkMetal);
-  buttPlate.position.set(0, 0.0, 0.37);
+  const buttPlate = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.090, 0.024), darkMetal);
+  buttPlate.position.set(0, -0.004, 0.395);
   ak.add(buttPlate);
   /* Sling swivel on stock */
   const swivel = new THREE.Mesh(new THREE.TorusGeometry(0.012, 0.0025, 6, 10), darkMetal);
   swivel.rotation.y = Math.PI / 2;
-  swivel.position.set(0.026, -0.02, 0.30);
+  swivel.position.set(0.024, -0.012, 0.316);
   ak.add(swivel);
 
   /* Top cover (dust cover) */
-  const topCover = new THREE.Mesh(new THREE.BoxGeometry(0.061, 0.020, 0.20), metal);
-  topCover.position.set(0, 0.052, -0.06);
+  const topCover = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.016, 0.23), metal);
+  topCover.position.set(0, 0.049, -0.045);
   ak.add(topCover);
   /* Dust cover ridges */
   for (let i = 0; i < 4; i++) {
-    const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.063, 0.003, 0.005), darkMetal);
-    ridge.position.set(0, 0.063, 0.02 - i * 0.045);
+    const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.051, 0.0025, 0.007), darkMetal);
+    ridge.position.set(0, 0.058, 0.035 - i * 0.055);
     ak.add(ridge);
   }
 
   /* === EJECTION PORT — visible cutout on the right side of the receiver
    * with a glimpse of the bolt face inside. Players see this every time
    * they aim or look at the side of the gun. */
-  const portCutout = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.030, 0.060), darkMetal);
-  portCutout.position.set(0.032, 0.030, -0.030);
+  const portCutout = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.024, 0.070), darkMetal);
+  portCutout.position.set(0.029, 0.022, -0.040);
   ak.add(portCutout);
   /* Bolt face peeking through the port — polished steel cylinder */
-  const boltFace = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.008, 12), polished);
+  const boltFace = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, 0.008, 12), polished);
   boltFace.rotation.z = Math.PI / 2;
-  boltFace.position.set(0.026, 0.030, -0.030);
+  boltFace.position.set(0.024, 0.022, -0.040);
   ak.add(boltFace);
   /* Brass cartridge head visible in the chamber (the "wow" detail) */
   const cartridge = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.004, 10), brass);
   cartridge.rotation.z = Math.PI / 2;
-  cartridge.position.set(0.029, 0.030, -0.030);
+  cartridge.position.set(0.0265, 0.022, -0.040);
   ak.add(cartridge);
   /* Primer dot in the center of the cartridge */
   const primer = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.003, 8), darkMetal);
   primer.rotation.z = Math.PI / 2;
-  primer.position.set(0.0305, 0.030, -0.030);
+  primer.position.set(0.028, 0.022, -0.040);
   ak.add(primer);
 
   /* Bolt charging handle (on the right side) — wrapped in a Group so we
    * can ANIMATE it sliding back & forward during firing & reload. */
   const bolt = new THREE.Group();
-  const ch = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.05), darkMetal);
-  ch.position.set(0.040, 0.038, -0.005);
+  const ch = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.010, 0.060), darkMetal);
+  ch.position.set(0.034, 0.036, -0.020);
   bolt.add(ch);
-  const chKnob = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.018, 10), darkMetal);
+  const chKnob = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.016, 10), darkMetal);
   chKnob.rotation.z = Math.PI / 2;
-  chKnob.position.set(0.054, 0.038, 0.018);
+  chKnob.position.set(0.046, 0.036, 0.012);
   bolt.add(chKnob);
   ak.add(bolt);
   ak.userData.bolt = bolt;
 
   /* Selector switch (large, AK signature lever) */
-  const selector = new THREE.Mesh(new THREE.BoxGeometry(0.013, 0.075, 0.025), metal);
-  selector.position.set(0.038, -0.022, 0.040);
+  const selector = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.064, 0.020), metal);
+  selector.position.set(0.033, -0.016, 0.040);
   ak.add(selector);
   /* Selector knob */
-  const selKnob = new THREE.Mesh(new THREE.SphereGeometry(0.008, 8, 6), darkMetal);
-  selKnob.position.set(0.046, -0.045, 0.040);
+  const selKnob = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 6), darkMetal);
+  selKnob.position.set(0.039, -0.038, 0.040);
   ak.add(selKnob);
 
   /* Side rail mount (left side, AK signature) */
-  const sideRail = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.075, 0.10), metal);
-  sideRail.position.set(-0.034, -0.012, -0.03);
+  const sideRail = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.050, 0.12), metal);
+  sideRail.position.set(-0.031, -0.006, -0.028);
   ak.add(sideRail);
 
   /* === EXTRA POLISH (more detail, AKM quality) === */
   /* Cleaning rod under the barrel (signature AKM detail) */
-  const cleaningRod = new THREE.Mesh(new THREE.CylinderGeometry(0.0028, 0.0028, 0.40, 6), darkMetal);
+  const cleaningRod = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, 0.44, 6), darkMetal);
   cleaningRod.rotation.x = Math.PI / 2;
-  cleaningRod.position.set(0, -0.005, -0.50);
+  cleaningRod.position.set(0, -0.003, -0.56);
   ak.add(cleaningRod);
   /* Cleaning rod tip */
-  const rodTip = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.012, 6), metal);
+  const rodTip = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.012, 6), metal);
   rodTip.rotation.x = Math.PI / 2;
-  rodTip.position.set(0, -0.005, -0.70);
+  rodTip.position.set(0, -0.003, -0.778);
   ak.add(rodTip);
 
   /* Front sling swivel under gas block */
   const frontSwivel = new THREE.Mesh(new THREE.TorusGeometry(0.012, 0.0025, 6, 12), darkMetal);
   frontSwivel.rotation.x = Math.PI / 2;
-  frontSwivel.position.set(0, -0.020, -0.345);
+  frontSwivel.position.set(0, -0.016, -0.386);
   ak.add(frontSwivel);
 
   /* Receiver rivets — characteristic AKM detail (4 per side) */
-  for (const sx of [-0.032, 0.032]) {
+  for (const sx of [-0.029, 0.029]) {
     for (let i = 0; i < 4; i++) {
-      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.004, 6, 4), darkMetal);
-      rivet.position.set(sx, 0.005 - (i % 2) * 0.030, -0.10 + i * 0.060);
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.0032, 6, 4), darkMetal);
+      rivet.position.set(sx, 0.002 - (i % 2) * 0.026, -0.11 + i * 0.058);
       ak.add(rivet);
     }
   }
 
   /* Magazine catch button (in front of trigger guard) */
-  const magCatch = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.020, 0.014), darkMetal);
-  magCatch.position.set(0, -0.060, -0.025);
+  const magCatch = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.018, 0.014), darkMetal);
+  magCatch.position.set(0, -0.054, -0.020);
   ak.add(magCatch);
 
   /* Mag well lip / trigger guard front (extra geometry for trigger area) */
-  const magWell = new THREE.Mesh(new THREE.BoxGeometry(0.052, 0.020, 0.075), metal);
-  magWell.position.set(0, -0.058, -0.032);
+  const magWell = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.018, 0.060), metal);
+  magWell.position.set(0, -0.050, -0.026);
   ak.add(magWell);
 
   /* Selector position markings (3 small notches: safe / auto / single) */
   for (let i = 0; i < 3; i++) {
     const notch = new THREE.Mesh(new THREE.BoxGeometry(0.002, 0.005, 0.014), darkMetal);
-    notch.position.set(0.046, -0.005 - i * 0.022, 0.040);
+    notch.position.set(0.039, -0.004 - i * 0.019, 0.040);
     ak.add(notch);
   }
 
   /* Charging handle slot (visible cut on top cover) */
-  const chSlot = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.005, 0.06), darkMetal);
-  chSlot.position.set(0.030, 0.063, 0.005);
+  const chSlot = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.004, 0.080), darkMetal);
+  chSlot.position.set(0.024, 0.056, -0.005);
   ak.add(chSlot);
 
   /* Stock decorative diamond (AKM signature on side of buttstock) */
-  for (const sx of [-0.029, 0.029]) {
-    const diamond = new THREE.Mesh(new THREE.BoxGeometry(0.001, 0.040, 0.045), darkMetal);
-    diamond.position.set(sx, 0.024, 0.27);
+  for (const sx of [-0.026, 0.026]) {
+    const diamond = new THREE.Mesh(new THREE.BoxGeometry(0.001, 0.034, 0.040), darkMetal);
+    diamond.position.set(sx, 0.018, 0.315);
     diamond.rotation.x = Math.PI / 4;
     ak.add(diamond);
   }
 
   /* Buttstock heel - extra small detail */
-  const heel = new THREE.Mesh(new THREE.BoxGeometry(0.054, 0.012, 0.020), woodDark);
-  heel.position.set(0, -0.040, 0.355);
+  const heel = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.010, 0.020), woodDark);
+  heel.position.set(0, -0.028, 0.360);
   ak.add(heel);
 
   ak.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
@@ -4016,7 +4044,7 @@ const sightMounts = {
   m416: new THREE.Group()
 };
 /* AK rail position — slightly above and forward of the rear sight notch */
-sightMounts.ak.position.set(0, 0.085, -0.06);
+sightMounts.ak.position.set(0, 0.076, -0.075);
 /* M416 rail position — atop the picatinny rail, in front of the rear sight */
 sightMounts.m416.position.set(0, 0.082, -0.10);
 ak.add(sightMounts.ak);
@@ -6542,15 +6570,15 @@ function _spawnDroppedMag() {
   const g = new THREE.Group();
   const magMat = new THREE.MeshStandardMaterial({ color: 0x4a3825, roughness: 0.5, metalness: 0.3 });
   const blackMat = new THREE.MeshStandardMaterial({ color: 0x141418, roughness: 0.65, metalness: 0.2 });
-  for (let i = 0; i < 6; i++) {
-    const f = i / 5;
-    const segH = 0.035;
+  for (let i = 0; i < 7; i++) {
+    const f = i / 6;
+    const segH = 0.031;
     const seg = new THREE.Mesh(
-      new THREE.BoxGeometry(0.046, segH, 0.082 - f * 0.008),
-      i === 5 ? blackMat : magMat
+      new THREE.BoxGeometry(0.038 + f * 0.008, segH, 0.082 - f * 0.010),
+      i === 6 ? blackMat : magMat
     );
-    seg.position.set(0, -0.035 - i * segH, 0.013 * f * f * 3.5 - 0.005);
-    seg.rotation.x = -0.05 - f * 0.13;
+    seg.position.set(0, -0.020 - i * segH, -0.010 + f * f * 0.105);
+    seg.rotation.x = -0.20 - f * 0.28;
     g.add(seg);
   }
   /* Place mag in front of the camera (at the active weapon's mag well) */
@@ -6972,7 +7000,7 @@ function updatePlayer(dt) {
       /* AK mount Y=0.085 + dot offset Y=0.020 = 0.105 above weapon
        * → weapon.y = -0.105 puts the dot exactly at eye level. Z=-0.18
        * keeps the rear flange ~14cm in front (mount.z=-0.06 + weapon.z=-0.18 = -0.24). */
-      aimTarget = new THREE.Vector3(0, -0.105, -0.18);
+      aimTarget = new THREE.Vector3(0, -0.096, -0.19);
     } else {
       /* M416 mount Y=0.082 + dot offset 0.020 = 0.102 → weapon.y=-0.102 */
       aimTarget = new THREE.Vector3(0, -0.102, -0.10);
@@ -6989,8 +7017,8 @@ function updatePlayer(dt) {
      *  M416: rear iron at (0, 0.085, 0.020), front post at (0, 0.092, -0.46).
      *        Slope = -0.0146, gun pulled back so rear sight at world (0,0,-0.13). */
     if (isAk) {
-      aimTarget = new THREE.Vector3(0, -0.0704, -0.045);
-      aimRotX   = -0.0672;
+      aimTarget = new THREE.Vector3(0, -0.072, -0.050);
+      aimRotX   = -0.0255;
     } else {
       aimTarget = new THREE.Vector3(0, -0.0850, -0.150);
       aimRotX   = -0.0146;

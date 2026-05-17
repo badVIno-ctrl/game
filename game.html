@@ -4741,6 +4741,8 @@ function ensureAudio() {
     audioBus = { preMaster, master: masterGain, deafFilter: deaf };
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
+  /* Kick off async loading of real gunshot samples (no-op after first call) */
+  if (typeof _loadGunshotSamples === 'function') _loadGunshotSamples();
 }
 /* Triggers the deaf-tone (low-pass + tinnitus) — cancels any previous
  * automation so rapid-fire shots reset the timer rather than stacking.
@@ -4762,13 +4764,53 @@ function triggerDeafTone(t0) {
   tg.exponentialRampToValueAtTime(0.0001, t0 + 0.6);
 }
 
+/* === REAL GUNSHOT SAMPLES (optional) ================================
+ * If the server hosts real recordings at /sounds/ak.mp3 and
+ * /sounds/m416.mp3, we load them once and use them in place of the
+ * synthesized sounds below. If the files are missing or fail to
+ * decode, we silently fall back to the procedural synth. */
+const _gunSamples = { ak: null, m416: null, _loaded: false };
+async function _loadGunshotSamples() {
+  if (_gunSamples._loaded || !audioCtx) return;
+  _gunSamples._loaded = true;
+  const tryLoad = async (key, url) => {
+    try {
+      const r = await fetch(url, { cache: 'force-cache' });
+      if (!r.ok) return;
+      const ab = await r.arrayBuffer();
+      const buf = await audioCtx.decodeAudioData(ab);
+      _gunSamples[key] = buf;
+    } catch (_) { /* keep null → fallback to synth */ }
+  };
+  await Promise.all([
+    tryLoad('ak',   '/sounds/ak.mp3'),
+    tryLoad('m416', '/sounds/m416.mp3'),
+  ]);
+}
+function _playSample(buf) {
+  if (!audioCtx || !buf) return false;
+  const now = audioCtx.currentTime;
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const g = audioCtx.createGain();
+  g.gain.value = 0.85 * _suppressorGain();
+  src.connect(g).connect(audioBus ? audioBus.preMaster : audioCtx.destination);
+  src.start(now);
+  if (!player.suppressorOn && typeof triggerDeafTone === 'function') triggerDeafTone(now);
+  return true;
+}
+
 /* === GUNSHOT — dispatcher ============================================
  * Routes to the per-weapon sound layer based on the player's active gun.
  * Each layer is hand-tuned: AK has more bass/punch, M416 has higher
  * crack/sharper attack/less low-end (5.56 vs 7.62 acoustic profile). */
 function playGunshot() {
-  if (player.activeWeapon === 'm416') playGunshotM416();
-  else playGunshotAk();
+  /* Prefer real samples if loaded */
+  if (player.activeWeapon === 'm416') {
+    if (!_playSample(_gunSamples.m416)) playGunshotM416();
+  } else {
+    if (!_playSample(_gunSamples.ak)) playGunshotAk();
+  }
   /* E2/H3 — biome-aware reverb tail layered behind the dry gunshot */
   if (!player.suppressorOn) { try { _spawnBiomeReverb(); } catch(_) {} }
 }
@@ -4807,16 +4849,32 @@ function _spawnBiomeReverb() {
     const obs = obstacles.filter(x => x !== terrain);
     if (raycaster.intersectObjects(obs, false).length > 0) overhead = true;
   } catch (_) {}
+  /* Count solid (non-tree) obstacles within 25m — concrete/stone walls
+   * give a bright, multi-tap reverb (urban/rocky). */
+  let nearbyStone = 0;
+  if (typeof obstacles !== 'undefined') {
+    const px = player.position.x, pz = player.position.z;
+    for (let i = 0; i < obstacles.length; i++) {
+      const ob = obstacles[i];
+      if (!ob || ob === terrain || !ob.position) continue;
+      const dx = ob.position.x - px, dz = ob.position.z - pz;
+      if (dx*dx + dz*dz < 25*25) nearbyStone++;
+      if (nearbyStone > 8) break;
+    }
+  }
   let env = 'open';
-  if (overhead)        env = 'roof';
-  else if (nearbyTrees > 8) env = 'forest';
-  /* per-env params */
-  let delay, lpHz, vol, taps;
-  if (env === 'forest') { delay = 0.13; lpHz = 800;  vol = 0.12; taps = 1; }
-  else if (env === 'roof') { delay = 0.06; lpHz = 4500; vol = 0.20; taps = 2; }
-  else                  { delay = 0.18; lpHz = 1700; vol = 0.16; taps = 2; }
-  /* Build tail — broadband noise burst of dur 0.4s through delay+lp */
-  const dur = 0.45;
+  if (overhead)               env = 'roof';
+  else if (nearbyStone >= 3)  env = 'stone';
+  else if (nearbyTrees > 8)   env = 'forest';
+  else if (nearbyTrees < 2 && nearbyStone === 0) env = 'wide';   /* open field */
+  /* per-env params: longer tail = more atmosphere on open ground */
+  let delay, lpHz, vol, taps, dur;
+  if (env === 'forest')      { delay = 0.13; lpHz = 700;  vol = 0.10; taps = 1; dur = 0.40; }
+  else if (env === 'roof')   { delay = 0.06; lpHz = 4500; vol = 0.22; taps = 2; dur = 0.50; }
+  else if (env === 'stone')  { delay = 0.09; lpHz = 3800; vol = 0.26; taps = 3; dur = 0.65; }
+  else if (env === 'wide')   { delay = 0.22; lpHz = 1400; vol = 0.20; taps = 2; dur = 0.85; }
+  else                        { delay = 0.18; lpHz = 1700; vol = 0.16; taps = 2; dur = 0.50; }
+  /* Build tail — broadband noise burst of dur seconds through delay+lp */
   const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
   const d = buf.getChannelData(0);
   for (let i = 0; i < d.length; i++) {
@@ -5467,7 +5525,7 @@ const PVP_SPAWN_YAWS = [0, Math.PI];
  * empty hands (initial spawn). */
 const WEAPON_STATS = {
   ak:   { name: 'АКМ',   magSize: 30, fireRate: 0.10, reloadDuration: 2.5,
-          baseDamage: 1.0, reserveStart: 0, recoilVert: 0.024, recoilHoriz: 0.0070,
+          baseDamage: 1.30, reserveStart: 0, recoilVert: 0.024, recoilHoriz: 0.0070,
           /* === REALISTIC SHOOTING METADATA ===
            *  weight: kg (affects ADS time, sprint speed)
            *  adsTime: seconds for full ADS engagement
@@ -5548,6 +5606,9 @@ function computeSpreadCone(isFirstShot) {
   if (typeof _heatLevel !== 'undefined' && _heatLevel > 0.4) {
     s *= 1.0 + (_heatLevel - 0.4) * 0.83;          /* up to ×1.5 at heat=1 */
   }
+  /* === DIRTY BARREL cone penalty — fouling widens grouping like heat */
+  const dirt = player.barrelDirt || 0;
+  if (dirt > 0.4) s *= 1.0 + (dirt - 0.4) * 0.6;     /* up to ×1.36 at dirt=1 */
   /* === C2 — PRONE = best cone (steady, supported) ================== */
   if (player.prone) s *= 0.55;
   else if (player.crouching) s *= 0.85;
@@ -5888,7 +5949,14 @@ window.addEventListener('keyup', e => {
 window.addEventListener('mousedown', e => {
   if (!controls.isLocked) return;
   if (e.button === 0) player.shooting = true;
-  if (e.button === 2) player.isAiming = true;
+  if (e.button === 2) {
+    /* Wounded arm can't shoulder the rifle */
+    if (player.armInjuredUntil && performance.now()/1000 < player.armInjuredUntil) {
+      if (typeof showNotice === 'function') showNotice('РУКА РАНЕНА — НЕЛЬЗЯ ЦЕЛИТЬСЯ');
+    } else {
+      player.isAiming = true;
+    }
+  }
 });
 window.addEventListener('mouseup', e => {
   if (e.button === 0) player.shooting = false;
@@ -6251,6 +6319,12 @@ function shoot() {
   if (player.prone)         stanceMul *= 0.50;
   else if (player.crouching) stanceMul *= 0.75;
   if (typeof _nearCover === 'function' && _nearCover()) stanceMul *= 0.80;
+  /* Wounded arm — trigger-pull tremor doubles felt recoil */
+  if (player.armInjuredUntil && now < player.armInjuredUntil) stanceMul *= 2.0;
+  /* Dirty barrel + heat — fouled gun kicks harder (residue makes the
+   * action sluggish; bolt slams back with extra force) */
+  const dirt = player.barrelDirt || 0;
+  if (dirt > 0.4)  stanceMul *= 1.0 + (dirt - 0.4) * 0.5;     /* up to ×1.3 */
   player.coverRecoilMul = stanceMul;
   const [pdx, pdy] = pattern[idx];
   /* tiny jitter so sprays aren't pixel-perfect identical */
@@ -6265,6 +6339,14 @@ function shoot() {
   /* Visual screen flash + barrel-heat tick */
   if (typeof fxShotFlash === 'function') fxShotFlash();
   if (typeof _bumpHeat === 'function')   _bumpHeat();
+  /* === Barrel fouling — each shot adds residue. Suppressor doubles it
+   * (gas blowback). Capped at 1.0. Cleaning station resets to 0. */
+  player.barrelDirt = Math.min(1, (player.barrelDirt || 0) + (player.suppressorOn ? 0.008 : 0.004));
+  if (player.barrelDirt > 0.85 && !player._dirtWarned) {
+    player._dirtWarned = true;
+    if (typeof showNotice === 'function') showNotice('СТВОЛ ЗАГРЯЗНЁН — ПЕРЕЗАРЯДИ (R)');
+    setTimeout(() => { player._dirtWarned = false; }, 6000);
+  }
   /* Camera shake — tiny on each shot, scaled by hip vs ADS */
   if (typeof pushCamShake === 'function') pushCamShake(player.isAiming ? 0.005 : 0.014);
 
@@ -6678,8 +6760,15 @@ function startReload() {
    * WEAPON_STATS.reloadDuration. */
   const baseDur = (WEAPON_STATS[player.activeWeapon] &&
                    WEAPON_STATS[player.activeWeapon].reloadDuration) || 2.5;
-  player.reloadDuration = (player.ammo === 0) ? baseDur * 1.4 : baseDur * 0.85;
+  const isEmpty = (player.ammo === 0);
+  let mul = isEmpty ? 1.4 : 0.85;
+  /* Wounded arm makes you fumble — reload is 60% slower */
+  if (player.armInjuredUntil && performance.now()/1000 < player.armInjuredUntil) mul *= 1.6;
+  player.reloadDuration = baseDur * mul;
   player.reloadPhase = 'drop';   /* drop -> insert -> bolt -> done */
+  if (typeof showNotice === 'function') {
+    showNotice(isEmpty ? 'ПОЛНАЯ ПЕРЕЗАРЯДКА' : 'ТАКТИЧЕСКАЯ');
+  }
   /* Reset reload anim state on the ACTIVE weapon */
   const w = activeWeaponObj();
   if (w && w.userData) {
@@ -6696,6 +6785,8 @@ function finishReload() {
   player.reserve -= give;
   player.reloading = false;
   player.reloadPhase = 'done';
+  /* Reload also wipes some fouling — quick swab during mag swap */
+  if (player.barrelDirt) player.barrelDirt = Math.max(0, player.barrelDirt - 0.30);
   /* Restore mag to home on the ACTIVE weapon */
   const w = activeWeaponObj();
   if (w && w.userData && w.userData.mag && w.userData.magHomePos) {
@@ -7078,8 +7169,44 @@ function updatePlayer(dt) {
   /* Position uses adsT to smoothly interpolate hip→ADS over weapon's
    * adsTime (D3). Without this, ADS snaps instantly which feels arcade. */
   const hipPos = new THREE.Vector3(0.20, -0.24, -0.30);
-  const tgtBlended = hipPos.clone().lerp(aimTarget, player.adsT);
-  const tgtRotX = THREE.MathUtils.lerp(0, aimRotX, player.adsT);
+  let tgtBlended = hipPos.clone().lerp(aimTarget, player.adsT);
+  let tgtRotX = THREE.MathUtils.lerp(0, aimRotX, player.adsT);
+
+  /* === WEAPON-LOW (anti-clipping) ===================================
+   * Cast a short ray forward from the camera. If the muzzle is about to
+   * poke through a wall/tank/tree, smoothly LOWER the gun (rotate the
+   * barrel down + pull weapon closer to camera) so it never clips into
+   * geometry. Standard CoD/Battlefield-style animation. */
+  try {
+    const camPos = new THREE.Vector3();
+    const camDir = new THREE.Vector3(0, 0, -1);
+    camera.getWorldPosition(camPos);
+    camDir.transformDirection(camera.matrixWorld);
+    const probeRange = 1.0;
+    raycaster.set(camPos, camDir);
+    raycaster.far = probeRange;
+    const probeTargets = [];
+    if (typeof obstacles !== 'undefined') probeTargets.push(...obstacles);
+    if (typeof trees !== 'undefined') for (const t of trees) if (t.obj) probeTargets.push(t.obj);
+    const hits = raycaster.intersectObjects(probeTargets, true);
+    let lowT = 0;
+    if (hits.length) {
+      /* 1.0 when surface is at camera, fading to 0 at probeRange */
+      lowT = THREE.MathUtils.clamp(1 - hits[0].distance / probeRange, 0, 1);
+    }
+    /* Smooth the value so it doesn't snap on/off */
+    player._weaponLowT = (player._weaponLowT || 0) + (lowT - (player._weaponLowT || 0)) * (1 - Math.pow(0.0005, dt));
+    const wt = player._weaponLowT;
+    if (wt > 0.001) {
+      /* Pull weapon closer to camera (z toward -0.05) and lower it */
+      tgtBlended = tgtBlended.clone();
+      tgtBlended.z = THREE.MathUtils.lerp(tgtBlended.z, -0.05, wt);
+      tgtBlended.y = THREE.MathUtils.lerp(tgtBlended.y, tgtBlended.y - 0.10, wt);
+      /* Rotate barrel ~40° down at full press */
+      tgtRotX = THREE.MathUtils.lerp(tgtRotX, 0.70, wt);
+    }
+  } catch (_) {}
+
   weapon.position.lerp(tgtBlended, 1 - Math.pow(0.0001, dt));
   weapon.rotation.x += (tgtRotX - weapon.rotation.x) * (1 - Math.pow(0.0001, dt));
 
@@ -7902,6 +8029,15 @@ function botShoot(bot, dist) {
   if (typeof fxSuppression === 'function') fxSuppression(0.35);
   /* Leg slow if hit in legs */
   if (zoneLabel === 'LEG') player.legSlow = Math.min(1, player.legSlow + 0.6);
+  /* === ARM injury — 5s of disabled ADS + 2× recoil + slow reload =====
+   * When the right arm is hit, the player can't shoulder the rifle
+   * cleanly. Forces hip-fire only, and the trigger-pull tremor doubles
+   * recoil. Cleared automatically after 5 s. */
+  if (zoneLabel === 'ARM') {
+    player.armInjuredUntil = performance.now()/1000 + 5.0;
+    player.isAiming = false;
+    if (typeof showNotice === 'function') showNotice('РУКА РАНЕНА');
+  }
   if (zoneLabel === 'HEAD') {
     if (player.inv.hasHelmet) showNotice('ШЛЕМ — ПОГЛОТИЛ УДАР');
     else showNotice('ПОПАДАНИЕ В ГОЛОВУ');
@@ -8133,8 +8269,41 @@ function drawMinimap() {
 }
 
 function updateHUD() {
-  document.getElementById('ammo').textContent = player.activeWeapon ? player.ammo : '—';
+  const ammoEl = document.getElementById('ammo');
+  ammoEl.textContent = player.activeWeapon ? player.ammo : '—';
   document.getElementById('reserve').textContent = player.activeWeapon ? ('/' + player.reserve) : '';
+  /* === LOW-AMMO WARNING — pulse red on HUD when ≤5 rounds left in mag.
+   * Also tint the active weapon's magazine red so the player sees the
+   * count visually on the gun (no actual bullet meshes — just color). */
+  const low = player.activeWeapon && player.ammo > 0 && player.ammo <= 5;
+  if (low) {
+    const pulse = 0.55 + 0.45 * Math.sin(performance.now() * 0.012);
+    ammoEl.style.color = `rgba(255,${Math.floor(60 * pulse)},${Math.floor(60 * pulse)},1)`;
+    ammoEl.style.textShadow = `0 0 ${6 + pulse*8}px rgba(255,40,40,${0.6 + pulse*0.3})`;
+  } else if (player.activeWeapon && player.ammo === 0) {
+    ammoEl.style.color = '#ff2020';
+    ammoEl.style.textShadow = '0 0 10px rgba(255,30,30,0.9)';
+  } else {
+    ammoEl.style.color = '';
+    ammoEl.style.textShadow = '';
+  }
+  /* Tint the magazine on the equipped weapon */
+  const wObj = (typeof activeWeaponObj === 'function') ? activeWeaponObj() : null;
+  if (wObj && wObj.userData && wObj.userData.mag) {
+    const mag = wObj.userData.mag;
+    if (!mag.userData._origColors) {
+      mag.userData._origColors = [];
+      mag.traverse(o => {
+        if (o.isMesh && o.material && o.material.color) {
+          mag.userData._origColors.push({ mat: o.material, c: o.material.color.clone() });
+        }
+      });
+    }
+    const t = low ? Math.min(1, (6 - player.ammo) / 6) : 0;
+    for (const e of mag.userData._origColors) {
+      e.mat.color.copy(e.c).lerp(new THREE.Color(0xff2020), t * 0.55);
+    }
+  }
   document.getElementById('health').textContent = Math.max(0, Math.floor(player.health));
   document.getElementById('health-fill').style.width = Math.max(0, player.health) + '%';
   document.getElementById('score').textContent = player.score;
@@ -9219,9 +9388,43 @@ function updateLowHpVeil() {
  * 8.  BARREL SMOKE  —  thin wisp from muzzle when sustained fire happens
  * ------------------------------------------------------------------------- */
 let _heatLevel = 0;
+let _heatGlowSprite = null;
 function _bumpHeat() { _heatLevel = Math.min(1, _heatLevel + 0.10); }
 function updateBarrelSmoke(dt) {
   _heatLevel = Math.max(0, _heatLevel - dt * 0.25);
+  /* === HEAT GLOW — orange ember at the muzzle when barrel is hot. */
+  const w = activeWeaponObj && activeWeaponObj();
+  if (!_heatGlowSprite) {
+    const m = new THREE.SpriteMaterial({
+      color: 0xff5510, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+    _heatGlowSprite = new THREE.Sprite(m);
+    _heatGlowSprite.scale.setScalar(0.18);
+    _heatGlowSprite.visible = false;
+  }
+  if (w && _heatLevel > 0.5) {
+    if (_heatGlowSprite.parent !== w) {
+      try { w.add(_heatGlowSprite); } catch(_){}
+    }
+    /* Position at the muzzle in weapon-local coordinates */
+    _heatGlowSprite.position.set(0, 0.014, -0.83);
+    /* Pulsing intensity scaled by heat above the threshold */
+    const intensity = (_heatLevel - 0.5) / 0.5;     /* 0..1 above threshold */
+    const pulse = 0.85 + 0.15 * Math.sin(performance.now() * 0.018);
+    _heatGlowSprite.material.opacity = intensity * pulse * 0.7;
+    _heatGlowSprite.scale.setScalar(0.10 + intensity * 0.16);
+    _heatGlowSprite.visible = true;
+    /* Warning notice once when crossing 0.7 */
+    if (_heatLevel > 0.7 && !player._hotWarned) {
+      player._hotWarned = true;
+      if (typeof showNotice === 'function') showNotice('СТВОЛ ПЕРЕГРЕТ');
+      setTimeout(() => { player._hotWarned = false; }, 4500);
+    }
+  } else if (_heatGlowSprite.visible) {
+    _heatGlowSprite.material.opacity = 0;
+    _heatGlowSprite.visible = false;
+  }
   if (player.suppressorOn) return;
   if (_heatLevel > 0.4 && Math.random() < dt * 6) {
     const w = activeWeaponObj && activeWeaponObj();

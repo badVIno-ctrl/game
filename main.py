@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import json
 import os
 import uuid
@@ -10,6 +11,12 @@ import time
 app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Serve user-provided gunshot samples (and any other static assets)
+# from /sounds/<file>.mp3 — see sounds/README.txt for details.
+SOUNDS_DIR = os.path.join(BASE_DIR, "sounds")
+os.makedirs(SOUNDS_DIR, exist_ok=True)
+app.mount("/sounds", StaticFiles(directory=SOUNDS_DIR), name="sounds")
 
 ROOM_TTL = 3600  # 1 hour max room lifetime
 

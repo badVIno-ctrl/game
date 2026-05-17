@@ -3116,13 +3116,36 @@ function createAK47() {
   gasTube.position.set(0, 0.042, -0.265);
   ak.add(gasTube);
 
-  /* Gas block */
+  /* Gas block (rear sight base — tangent leaf rests on this) */
   const sightBlock = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.048, 0.060), metal);
   sightBlock.position.set(0, 0.032, -0.120);
   ak.add(sightBlock);
-  const gasBlock = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.058, 0.050), metal);
-  gasBlock.position.set(0, 0.026, -0.385);
-  ak.add(gasBlock);
+
+  /* === GAS BLOCK (front, where gas tube meets barrel) ===
+   * Real AKM gas block is a cylindrical steel clamp around the barrel
+   * with a flat top, cooling vent slots on the sides, and a sling-loop
+   * mount underneath. Replaces the plain floating box. */
+  const gbBody = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.055, 14), metal);
+  gbBody.rotation.x = Math.PI / 2;
+  gbBody.position.set(0, 0.014, -0.385);
+  ak.add(gbBody);
+  /* Flat top platform (where gas tube tube enters) */
+  const gbTop = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.014, 0.048), metal);
+  gbTop.position.set(0, 0.040, -0.385);
+  ak.add(gbTop);
+  /* Cooling vent slots on each side (3 per side) */
+  for (const sx of [-0.0225, 0.0225]) {
+    for (let i = 0; i < 3; i++) {
+      const slot = new THREE.Mesh(new THREE.BoxGeometry(0.002, 0.006, 0.010), darkMetal);
+      slot.position.set(sx, 0.018, -0.398 + i * 0.013);
+      ak.add(slot);
+    }
+  }
+  /* Sloped front face leading into the front-sight base */
+  const gbFront = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.018, 0.018, 14), metal);
+  gbFront.rotation.x = Math.PI / 2;
+  gbFront.position.set(0, 0.014, -0.420);
+  ak.add(gbFront);
 
   /* Barrel */
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0105, 0.0105, 0.26, 14), darkMetal);
@@ -3134,30 +3157,58 @@ function createAK47() {
   barrelFront.position.set(0, 0.014, -0.605);
   ak.add(barrelFront);
 
-  /* Front sight tower — premium polished steel for highlights */
-  const fsBase = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.034, 0.030), metal);
-  fsBase.position.set(0, 0.028, -0.705);
+  /* === FRONT SIGHT TOWER (realistic AKM hooded post) ===
+   * Real AKM front sight is a cylindrical sleeve clamped on the barrel,
+   * with TWO vertical ears connected at the top by a ROUND HOOD (not a
+   * flat plate). The post sits inside the hood and its tip ends roughly
+   * at the hood's apex — never sticks out above. We model the hood with
+   * a half-torus so it reads correctly from any angle. */
+  /* Tapered cylindrical base hugging the barrel */
+  const fsBase = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.020, 0.034, 14), metal);
+  fsBase.position.set(0, 0.014, -0.705);
   ak.add(fsBase);
-  for (const sx of [-0.014, 0.014]) {
-    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.050, 0.016), polished);
-    ear.position.set(sx, 0.060, -0.705);
+  /* Riser block on top of the base where the ears mount */
+  const fsRiser = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.018, 0.024), metal);
+  fsRiser.position.set(0, 0.040, -0.705);
+  ak.add(fsRiser);
+  /* Two ears (hood walls) */
+  for (const sx of [-0.011, 0.011]) {
+    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.034, 0.018), polished);
+    ear.position.set(sx, 0.063, -0.705);
     ak.add(ear);
   }
-  const fsBridge = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.006, 0.016), polished);
-  fsBridge.position.set(0, 0.082, -0.705);
-  ak.add(fsBridge);
-  const fsPost = new THREE.Mesh(new THREE.CylinderGeometry(0.0025, 0.0025, 0.040, 8), polished);
-  fsPost.position.set(0, 0.068, -0.705);
+  /* Round hood arc — half torus connecting the two ears at the top.
+   * Radius matches ear spacing so the arc lands exactly on each ear. */
+  const fsHood = new THREE.Mesh(
+    new THREE.TorusGeometry(0.0115, 0.0028, 8, 18, Math.PI),
+    polished
+  );
+  fsHood.position.set(0, 0.080, -0.705);
+  fsHood.rotation.y = Math.PI / 2;   /* arc opens forward/back along Z */
+  ak.add(fsHood);
+  /* Hood side caps to give it depth (visible from the side) */
+  for (const sz of [-0.009, 0.009]) {
+    const cap = new THREE.Mesh(new THREE.TorusGeometry(0.0115, 0.0024, 6, 14, Math.PI), polished);
+    cap.position.set(0, 0.080, -0.705 + sz);
+    cap.rotation.y = Math.PI / 2;
+    ak.add(cap);
+  }
+  /* Adjustable post — TIP ends at the hood apex (y=0.080), NOT above it */
+  const fsPost = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0028, 0.034, 10), polished);
+  fsPost.position.set(0, 0.063, -0.705);
   ak.add(fsPost);
-  const fsBead = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.004, 0.005), polished);
-  fsBead.position.set(0, 0.090, -0.705);
+  /* Tiny bead at the very tip of the post — sits inside the hood */
+  const fsBead = new THREE.Mesh(new THREE.SphereGeometry(0.0035, 8, 6), polished);
+  fsBead.position.set(0, 0.080, -0.705);
   ak.add(fsBead);
-  const fsScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.007, 8), polished);
+  /* Adjustment screw on the side of the base */
+  const fsScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.0032, 0.0032, 0.006, 8), polished);
   fsScrew.rotation.z = Math.PI / 2;
-  fsScrew.position.set(0.018, 0.044, -0.705);
+  fsScrew.position.set(0.020, 0.014, -0.705);
   ak.add(fsScrew);
-  const bayLug = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.018, 0.032), metal);
-  bayLug.position.set(0, -0.004, -0.718);
+  /* Bayonet lug under the front sight */
+  const bayLug = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.016, 0.034), metal);
+  bayLug.position.set(0, -0.006, -0.718);
   ak.add(bayLug);
 
   /* Slant muzzle brake */

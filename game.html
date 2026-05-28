@@ -471,11 +471,18 @@ import { RoomEnvironment }   from 'three/addons/environments/RoomEnvironment.js'
 
 /* === PVP MODE DETECTION === */
 const _urlParams = new URLSearchParams(window.location.search);
-const PVP_MODE    = _urlParams.get('mode') === 'pvp';
+const TEAM_MODE   = _urlParams.get('mode') === 'team';
+const PVP_MODE    = _urlParams.get('mode') === 'pvp' || TEAM_MODE;
 const PVP_ROOM    = _urlParams.get('room') || '';
 const PVP_NICKNAME= _urlParams.get('nickname') || '';
 const PVP_SPAWN   = parseInt(_urlParams.get('spawn') || '0', 10);
 const PVP_OPPONENT= _urlParams.get('opponent') || '';
+const TEAM_SIDE   = (_urlParams.get('team') || 'A').toUpperCase();
+let   TEAM_ROSTER = [];
+try {
+  TEAM_ROSTER = JSON.parse(_urlParams.get('roster') || '[]');
+  if (!Array.isArray(TEAM_ROSTER)) TEAM_ROSTER = [];
+} catch (_) { TEAM_ROSTER = []; }
 
 /* ========================================================================
    CORE SETUP
@@ -493,7 +500,7 @@ const renderer = new THREE.WebGLRenderer({
   preserveDrawingBuffer: false,
   stencil: false
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, _urlParams.get('mode')==='team' ? 1.0 : 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -564,7 +571,11 @@ camera.position.set(0, 1.7, 0);
  * inline the two values here instead of referencing that binding. */
 if (PVP_MODE) {
   camera.rotation.order = 'YXZ';
-  camera.rotation.y = (PVP_SPAWN === 1) ? Math.PI : 0;
+  if (typeof TEAM_MODE !== 'undefined' && TEAM_MODE) {
+    camera.rotation.y = (TEAM_SIDE === 'B') ? Math.PI : 0;
+  } else {
+    camera.rotation.y = (PVP_SPAWN === 1) ? Math.PI : 0;
+  }
 }
 
 window.addEventListener('resize', () => {
@@ -605,7 +616,7 @@ sun.castShadow = true;
 /* Shadow map bumped 1024 → 2048 for sharper contact shadows on weapons /
  * helmet edges. With autoUpdate=false (re-rendered every 4 frames) the
  * GPU cost is amortized — still cheap on a mid-range laptop. */
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(_urlParams.get('mode')==='team' ? 1024 : 2048, _urlParams.get('mode')==='team' ? 1024 : 2048);
 sun.shadow.camera.left = -60;
 sun.shadow.camera.right = 60;
 sun.shadow.camera.top = 60;
@@ -660,14 +671,14 @@ renderer.toneMappingExposure = 1.05;
                           now that the composer owns final blit).
    ======================================================================== */
 const composer = new EffectComposer(renderer);
-composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+composer.setPixelRatio(Math.min(window.devicePixelRatio, _urlParams.get('mode')==='team' ? 1.0 : 1.5));
 composer.setSize(window.innerWidth, window.innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 /* Bloom: strength 0.45, radius 0.6, threshold 0.85 — gives a punchy but
  * not "blown-out" look. Muzzle flashes & sky highlights pop, walls don't. */
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.45,   /* strength */
+  _urlParams.get('mode')==='team' ? 0.25 : 0.45,   /* strength */
   0.60,   /* radius   */
   0.85    /* threshold */
 );
@@ -1033,7 +1044,7 @@ bladeMat.onBeforeCompile = (shader) => {
     );
 };
 
-const GRASS_COUNT = 4000;
+const GRASS_COUNT = _urlParams.get('mode')==='team' ? 2000 : 4000;
 const grassMesh = new THREE.InstancedMesh(bladeGeo, bladeMat, GRASS_COUNT);
 const dummy = new THREE.Object3D();
 for (let i = 0; i < GRASS_COUNT; i++) {
@@ -5519,6 +5530,52 @@ const PVP_SPAWNS = [
 ];
 /* Initial yaw per PvP spawn — see PVP_MODE init block where this is applied. */
 const PVP_SPAWN_YAWS = [0, Math.PI];
+
+/* === TEAM MODE SPAWN GRID =====================================================
+ * Map is extended ~1.5× (z spans roughly +30 to -230 ≈ 260 units) when 10 players
+ * are on it. Team A spawns in a fan south of x=0 and z=+25 area; Team B spawns
+ * in a mirrored fan north at z=-220 area. Spawns are spaced ~6m apart so
+ * teammates don't telefrag, and each row of 5 forms a slight arc. */
+const TEAM_A_SPAWNS = [
+  new THREE.Vector3(-12, 1.7,  25.0),
+  new THREE.Vector3( -6, 1.7,  22.0),
+  new THREE.Vector3(  0, 1.7,  20.7),   /* center — same as legacy spawn 0 */
+  new THREE.Vector3(  6, 1.7,  22.0),
+  new THREE.Vector3( 12, 1.7,  25.0),
+];
+const TEAM_B_SPAWNS = [
+  new THREE.Vector3(-12, 1.7, -220.0),
+  new THREE.Vector3( -6, 1.7, -222.5),
+  new THREE.Vector3(  0, 1.7, -224.0),
+  new THREE.Vector3(  6, 1.7, -222.5),
+  new THREE.Vector3( 12, 1.7, -220.0),
+];
+const TEAM_A_YAW = 0;        /* face north (-Z) toward enemy team */
+const TEAM_B_YAW = Math.PI;  /* face south (+Z) toward enemy team */
+
+function getTeamSpawnPos(team, idx) {
+  const arr = (team === 'B') ? TEAM_B_SPAWNS : TEAM_A_SPAWNS;
+  const safeIdx = Math.max(0, Math.min(arr.length - 1, idx | 0));
+  return arr[safeIdx].clone();
+}
+function getTeamSpawnYaw(team) {
+  return (team === 'B') ? TEAM_B_YAW : TEAM_A_YAW;
+}
+/* Resolve "my" spawn position taking team mode into account. */
+function getMySpawnPos() {
+  if (typeof TEAM_MODE !== 'undefined' && TEAM_MODE) {
+    return getTeamSpawnPos(TEAM_SIDE, PVP_SPAWN);
+  }
+  if (typeof PVP_MODE !== 'undefined' && PVP_MODE) {
+    return PVP_SPAWNS[PVP_SPAWN] ? PVP_SPAWNS[PVP_SPAWN].clone() : SPAWN_POS.clone();
+  }
+  return SPAWN_POS.clone();
+}
+function getMySpawnYaw() {
+  if (typeof TEAM_MODE !== 'undefined' && TEAM_MODE) return getTeamSpawnYaw(TEAM_SIDE);
+  if (typeof PVP_MODE !== 'undefined' && PVP_MODE) return PVP_SPAWN_YAWS[PVP_SPAWN] || 0;
+  return 0;
+}
 /* === WEAPON CONFIGS ===
  * Per-weapon stats + attachment slot. The active weapon is selected via
  * player.activeWeapon ('ak' | 'm416' | null). When null the player has
@@ -5623,7 +5680,7 @@ function computeSpreadCone(isFirstShot) {
   return s;
 }
 const player = {
-  position: (PVP_MODE ? PVP_SPAWNS[PVP_SPAWN] : SPAWN_POS).clone(),
+  position: getMySpawnPos(),
   velocity: new THREE.Vector3(),
   onGround: true,
   health: 100,
@@ -9580,6 +9637,7 @@ function animate() {
     if (!PVP_MODE) { updateBots(dt); updateMedkits(dt); updateCTF(dt); }
     regen(dt);
     if (PVP_MODE && typeof _pvpUpdate === 'function') _pvpUpdate(dt);
+    if (TEAM_MODE && typeof updateKillcam === 'function') updateKillcam();
   }
   updateRain(dt);
   updateBullets(dt);                  /* B1/B2/B4 — physics projectiles */
@@ -9706,7 +9764,7 @@ if (PVP_MODE) {
   pvpHud.style.cssText = 'position:fixed;top:60px;right:30px;z-index:20;pointer-events:none;' +
     'font-family:Consolas,monospace;text-align:right';
   pvpHud.innerHTML = `
-    <div style="font-size:12px;color:#889;letter-spacing:1px;margin-bottom:4px">ОНЛАЙН PVP</div>
+    <div style="font-size:12px;color:#889;letter-spacing:1px;margin-bottom:4px">${TEAM_MODE ? 'КОМАНДНАЯ ИГРА' : 'ОНЛАЙН PVP'}</div>
     <div id="pvp-scores" style="font-size:15px;color:#eee"></div>
     <div id="pvp-round-msg" style="font-size:18px;color:#ff6040;margin-top:8px;font-weight:bold"></div>
   `;
@@ -9729,11 +9787,14 @@ if (PVP_MODE) {
   let _pvpOppModel = null;  /* THREE.Group */
   let _pvpOppDead = false;
   let _pvpRoundActive = false;
+  let _pvpDying = false;       /* guards double-send of 'died' for the same round */
   let _pvpWs = null;
   let _pvpStateInterval = null;
   let _pvpLastRecv = {};
 
-  function createOpponentModel() {
+  function createOpponentModel(opponentNick, isAlly) {
+    opponentNick = opponentNick || PVP_OPPONENT;
+    isAlly = !!isAlly;
     const g = new THREE.Group();
 
     /* === Materials — modern infantry palette: muted multicam-ish khaki,
@@ -9988,37 +10049,47 @@ if (PVP_MODE) {
     labelCv.width = 256; labelCv.height = 48;
     const lctx = labelCv.getContext('2d');
     lctx.fillStyle = 'rgba(0,0,0,0.6)'; lctx.fillRect(0, 0, 256, 48);
-    lctx.fillStyle = '#ff6040'; lctx.font = 'bold 28px sans-serif';
+    lctx.fillStyle = isAlly ? '#44ddff' : '#ff5040';
+    lctx.font = 'bold 28px sans-serif';
     lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
-    lctx.fillText(PVP_OPPONENT, 128, 24);
+    lctx.fillText(opponentNick, 128, 24);
     const labelTex = new THREE.CanvasTexture(labelCv);
     const label = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.22),
       new THREE.MeshBasicMaterial({ map: labelTex, transparent: true, depthWrite: false }));
     label.position.y = 2.35; g.add(label);
 
-    g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
-    g.position.set(0, -100, 0); /* hidden until positioned */
-    scene.add(g);
-
-    _pvpOpp = {
+    /* (scene-attachment + initial position moved to g_postInitOpp caller) */
+    const avatar = {
+      nick: opponentNick,
+      isAlly: isAlly,
       obj: g, head, torso, vest, helmet, armL, armR,
       legL, legR, hbBg, hbFg, label,
-      /* Limb GROUPS — used by the procedural animator to rotate at the
-       * shoulder / hip joint without disturbing the raycast hit meshes. */
       armLGroup, armRGroup, legLGroup, legRGroup,
       rifleHolder, oppAk, oppM416, oppFlash, oppFlashMat,
       currentWeapon: 'ak',
-      /* Animation state — gait phase + last-known position for speed est */
       _gait: 0,
       _prevX: 0, _prevZ: 0,
       _speed: 0,
+      _lastRecv: {},
+      _dead: false,
       health: 100, maxHealth: 100
     };
-    _pvpOppModel = g;
-    return _pvpOpp;
+    return avatar;
   }
 
-  createOpponentModel();
+  /* For 1v1, build the single opponent avatar; for team mode, avatars are
+   * built lazily from the roster inside the team module below. */
+  if (!TEAM_MODE) {
+    _pvpOpp = createOpponentModel(PVP_OPPONENT, false);
+    _pvpOppModel = _pvpOpp.obj;
+    g_postInitOpp(_pvpOpp);
+  }
+
+  function g_postInitOpp(av) {
+    av.obj.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
+    av.obj.position.set(0, -100, 0);
+    scene.add(av.obj);
+  }
 
   /* --- AUTO-EQUIP FULL LOADOUT --- */
   function pvpAutoEquip() {
@@ -10034,7 +10105,8 @@ if (PVP_MODE) {
     player.plates = { front: 25, back: 25, helmet: 15 };
     player.plateMax = { front: 25, back: 25, helmet: 15 };
     player.reserveCap = 180;
-    player.medkits = 3;
+    player.medkits = TEAM_MODE ? 6 : 3;          /* MORE medkits in team mode (10 players need more) */
+    player.bandages = TEAM_MODE ? 6 : 3;         /* MORE bandages in team mode */
     player.frag = player.fragMax;
     player.smoke = player.smokeMax;
     player.inv.hasSuppressor = true;
@@ -10126,7 +10198,8 @@ if (PVP_MODE) {
       if (typeof fxHitFlash === 'function') fxHitFlash();
       if (typeof pushCamShake === 'function') pushCamShake(0.05);
       if (typeof playHurt === 'function' && Math.random() < 0.6) playHurt();
-      if (player.health <= 0 && controls.isLocked) {
+      if (player.health <= 0 && controls.isLocked && !_pvpDying) {
+        _pvpDying = true;
         player.health = 0;
         player.stats.deaths += 1;
         handleDeath();
@@ -10147,12 +10220,11 @@ if (PVP_MODE) {
     else if (msg.type === 'respawn') {
       _pvpRoundActive = true;
       _pvpOppDead = false;
+      _pvpDying = false;
       const rmsg = document.getElementById('pvp-round-msg');
       if (rmsg) rmsg.textContent = '';
-      /* Respawn at new spawn point + apply the spawn's initial yaw so the
-       * player faces the combat zone (player 2 spawns facing south). */
       const spawnIdx = msg.spawn;
-      const spawnPos = PVP_SPAWNS[spawnIdx] || PVP_SPAWNS[0];
+      const spawnPos = (PVP_SPAWNS[spawnIdx] || PVP_SPAWNS[0]).clone();
       player.position.copy(spawnPos);
       player.velocity.set(0, 0, 0);
       const spawnYaw = (typeof PVP_SPAWN_YAWS !== 'undefined') ? (PVP_SPAWN_YAWS[spawnIdx] || 0) : 0;
@@ -10431,7 +10503,661 @@ if (PVP_MODE) {
   };
 
   /* --- CONNECT --- */
-  pvpConnect();
+
+  /* ===================================================================
+   * TEAM MODE MODULE
+   * - Multi-player avatars (5v5 max) in a single Map keyed by nickname.
+   * - Friendly-fire disabled.
+   * - Per-player leaderboard + team kill totals.
+   * - Independent message handler that overrides the 1v1 handlers.
+   * =================================================================== */
+  const _teamPlayers = new Map();   /* nick -> avatar */
+  let   _teamLastDamager = '';      /* nick of whoever hit me last (for kill credit) */
+  /* === KILLCAM STATE === Snap camera to the killer's POV for 2 seconds. */
+  let _killcamActive = false;
+  let _killcamUntil  = 0;
+  let _killcamKillerNick = '';
+  let _killcamKillerPos  = null;   /* THREE.Vector3 */
+  let _killcamMyDeathPos = null;
+  let _killcamSavedCamPos = null;
+  let _killcamSavedCamRot = null;
+  /* === MATCH END STATE === Set once the server broadcasts team_match_end. */
+  let _matchEnded = false;
+  let _matchEndUntil = 0;
+  let   _teamLastDamageT = 0;       /* timestamp of that hit (seconds) */
+  let   _teamScores = {};           /* nick -> kills */
+  let   _teamTotals = { A: 0, B: 0 };
+  let   _teamRoster = TEAM_ROSTER.slice();   /* [{nick, team, spawn}] */
+  let   _teamMyTeam = TEAM_SIDE;
+  let   _teamGameStarted = false;
+  let   _teamDying = false;
+
+  function teamColorForNick(nick) {
+    /* Returns hex color based on viewer-relative team (ally vs enemy). */
+    const entry = _teamRoster.find(p => p.nick === nick);
+    if (!entry) return 0xff5040;
+    return (entry.team === _teamMyTeam) ? 0x44ddff : 0xff5040;
+  }
+
+  function teamSpawnOpponent(nick) {
+    if (nick === PVP_NICKNAME) return null;
+    if (_teamPlayers.has(nick)) return _teamPlayers.get(nick);
+    const entry = _teamRoster.find(p => p.nick === nick);
+    if (!entry) return null;
+    const isAlly = (entry.team === _teamMyTeam);
+    const av = createOpponentModel(nick, isAlly);
+    g_postInitOpp(av);
+    av.team = entry.team;
+    _teamPlayers.set(nick, av);
+    return av;
+  }
+
+  /* Initialize avatars for every roster entry except me. */
+  function teamBuildRoster() {
+    for (const entry of _teamRoster) {
+      if (entry.nick !== PVP_NICKNAME) teamSpawnOpponent(entry.nick);
+    }
+  }
+
+  /* === Override the PvP hooks for team mode. =========================== */
+  function teamInstallHooks() {
+    /* ----- Hit detection: raycast against ALL enemy avatars + send team_hit. */
+    window._pvpBulletHit = function(raycaster, bullet) {
+      if (!_teamGameStarted) return false;
+      const targets = [];
+      const targetToAvatar = new Map();
+      for (const av of _teamPlayers.values()) {
+        if (!av || av._dead) continue;
+        if (av.isAlly) continue;   /* friendly-fire OFF */
+        for (const m of [av.head, av.helmet, av.torso, av.vest,
+                          av.armL, av.armR, av.legL, av.legR]) {
+          if (m) { targets.push(m); targetToAvatar.set(m, av); }
+        }
+      }
+      if (!targets.length) return false;
+      const hits = raycaster.intersectObjects(targets, false);
+      if (!hits.length) return false;
+      const hit = hits[0];
+      const av = targetToAvatar.get(hit.object);
+      if (!av) return false;
+
+      const isHead = (hit.object === av.head || hit.object === av.helmet);
+      const isChest = (hit.object === av.torso || hit.object === av.vest);
+      const energyFrac = bullet.energyJ / WEAPON_STATS[bullet.weapon].energyJ;
+      const base = WEAPON_STATS[bullet.weapon].baseDamage * energyFrac;
+      let dmg;
+      if (isHead) dmg = Math.round(base * 100 * 2.5);
+      else if (isChest) dmg = Math.round(base * 100 * 1.0);
+      else dmg = Math.round(base * 100 * 0.65);
+      dmg = Math.max(1, dmg);
+
+      if (typeof showHitMarker === 'function') showHitMarker(isHead ? 'HEADSHOT' : '');
+      if (typeof showHitmarker === 'function') showHitmarker();
+      if (typeof spawnBlood === 'function') spawnBlood(hit.point);
+      if (isHead) showNotice('HEADSHOT');
+      player.stats.hits += 1;
+      if (isHead) player.stats.headshots += 1;
+
+      pvpSend({ type: 'team_hit', target: av.nick, damage: dmg });
+      return true;
+    };
+
+    /* ----- Death: send team_died with the last damager as killer. */
+    window._pvpOnDeath = function() {
+      if (_teamDying) return;     /* guard double-fire (the scoring bug fix) */
+      _teamDying = true;
+      showNotice('ВЫ УБИТЫ');
+      controls.unlock();
+      const now = performance.now() / 1000;
+      /* If we were damaged in the last 8s, credit that player. Otherwise
+       * send an empty killer (no one gets the kill — environmental death). */
+      const killer = (_teamLastDamager && (now - _teamLastDamageT) < 8.0) ? _teamLastDamager : '';
+      const killerAv = killer ? _teamPlayers.get(killer) : null;
+      const kx = (killerAv && killerAv.obj) ? killerAv.obj.position.x : null;
+      const ky = (killerAv && killerAv.obj) ? killerAv.obj.position.y : null;
+      const kz = (killerAv && killerAv.obj) ? killerAv.obj.position.z : null;
+      pvpSend({
+        type: 'team_died',
+        killer: killer,
+        killer_x: kx, killer_y: ky, killer_z: kz,
+        x: player.position.x, y: player.position.y, z: player.position.z,
+      });
+    };
+
+    /* ----- Shoot: broadcast to all team-room members. */
+    window._pvpOnShoot = function(muzzleWorld, dir) {
+      pvpSend({
+        type: 'team_shot',
+        ox: muzzleWorld.x, oy: muzzleWorld.y, oz: muzzleWorld.z,
+        dx: dir.x, dy: dir.y, dz: dir.z
+      });
+    };
+
+    /* ----- Grenade throw: broadcast. */
+    window._pvpOnGrenadeThrow = function(data) {
+      pvpSend({ type: 'team_grenade', ...data });
+    };
+
+    /* ----- Per-frame update: drive each avatar's interpolation. */
+    window._pvpUpdate = function(dt) {
+      for (const av of _teamPlayers.values()) {
+        teamUpdateAvatar(av, dt);
+      }
+    };
+  }
+
+  /* Drives one avatar (animation + interpolation) — same logic the
+   * 1v1 module uses for a single opponent, generalized to per-avatar state. */
+  function teamUpdateAvatar(av, dt) {
+    if (!av || !av.obj) return;
+    const r = av._lastRecv;
+    if (av._dead) {
+      av.obj.position.y = -100;
+      return;
+    }
+    if (r.x !== undefined) {
+      const targetPos = new THREE.Vector3(r.x, r.y || 0, r.z);
+      if (typeof terrainHeight === 'function') {
+        targetPos.y = terrainHeight(targetPos.x, targetPos.z);
+      }
+      av.obj.position.lerp(targetPos, 1 - Math.pow(0.001, dt));
+      if (r.rx !== undefined) {
+        const lookTarget = av.obj.position.clone().add(new THREE.Vector3(r.rx, 0, r.rz));
+        lookTarget.y = av.obj.position.y;
+        av.obj.lookAt(lookTarget);
+      }
+      if (r.hp !== undefined) {
+        av.health = r.hp;
+        const ratio = Math.max(0, r.hp / 100);
+        av.hbFg.scale.x = ratio;
+        av.hbFg.material.color.setHex(ratio > 0.5 ? 0x44ff44 : (ratio > 0.25 ? 0xffaa00 : 0xff3333));
+      }
+      av.hbBg.lookAt(camera.position);
+      av.hbFg.lookAt(camera.position);
+      av.label.lookAt(camera.position);
+    }
+    if (r.w && r.w !== av.currentWeapon) {
+      av.currentWeapon = r.w;
+      if (av.oppAk)   av.oppAk.visible   = (r.w === 'ak');
+      if (av.oppM416) av.oppM416.visible = (r.w === 'm416');
+    } else if (r.w && av.oppAk && av.oppM416 && !av.oppAk.visible && !av.oppM416.visible) {
+      if (av.oppAk)   av.oppAk.visible   = (r.w === 'ak');
+      if (av.oppM416) av.oppM416.visible = (r.w === 'm416');
+    }
+    /* gait */
+    const ox = av.obj.position.x, oz = av.obj.position.z;
+    const dx = ox - av._prevX, dz = oz - av._prevZ;
+    const instSpeed = Math.sqrt(dx*dx + dz*dz) / Math.max(dt, 0.001);
+    av._speed = av._speed * 0.85 + instSpeed * 0.15;
+    av._prevX = ox; av._prevZ = oz;
+    const moving = av._speed > 0.4;
+    if (moving) av._gait += dt * (4.0 + Math.min(8.0, av._speed * 1.6));
+    else av._gait *= 0.9;
+    const swing = moving ? 0.55 : 0.0;
+    const phase = av._gait;
+    if (av.legLGroup) av.legLGroup.rotation.x =  Math.sin(phase) * swing;
+    if (av.legRGroup) av.legRGroup.rotation.x = -Math.sin(phase) * swing;
+    const bob = moving ? Math.abs(Math.sin(phase)) * 0.04 : 0;
+    av.obj.position.y += bob;
+    if (av.rifleHolder) av.rifleHolder.rotation.z = Math.sin(av._gait * 0.6) * 0.04;
+  }
+
+  /* Render someone else's shot (muzzle flash on their rifle + tracer + sfx). */
+  function teamRenderPlayerShot(msg) {
+    const av = _teamPlayers.get(msg.from);
+    if (!av || !av.obj || av._dead) return;
+    const dist = av.obj.position.distanceTo(player.position);
+    if (av.oppFlashMat) {
+      av.oppFlashMat.opacity = 1.0;
+      setTimeout(() => { if (av && av.oppFlashMat) av.oppFlashMat.opacity = 0; }, 55);
+    }
+    if (typeof playEnemyShot === 'function') playEnemyShot(dist, av.obj.position);
+    if (msg.ox !== undefined && msg.dx !== undefined && typeof spawnTracer === 'function') {
+      const from = new THREE.Vector3(msg.ox, msg.oy, msg.oz);
+      const dir = new THREE.Vector3(msg.dx, msg.dy, msg.dz);
+      if (dir.lengthSq() > 0.0001) {
+        dir.normalize();
+        const to = from.clone().addScaledVector(dir, 80);
+        try { spawnTracer(from, to); } catch(_){}
+      }
+    }
+  }
+
+  /* ----- TEAM MESSAGE HANDLER (overrides pvpHandleMessage) ----- */
+  function teamHandleMessage(msg) {
+    if (msg.type === 'team_game_start') {
+      _teamGameStarted = true;
+      _teamDying = false;
+      _matchEnded = false;
+      if (msg.reconnect) showNotice('ВЫ ВЕРНУЛИСЬ В МАТЧ');
+
+      _teamRoster = (msg.roster || _teamRoster).slice();
+      _teamMyTeam = msg.team || _teamMyTeam;
+      teamBuildRoster();
+      _teamScores = msg.scores || _teamScores;
+      _teamTotals = msg.team_scores || _teamTotals;
+      updateTeamScoreDisplay();
+      showNotice('МАТЧ НАЧАЛСЯ — Команда ' +
+        (_teamMyTeam === 'A' ? 'СИНИЕ' : 'КРАСНЫЕ'));
+      pvpAutoEquip();
+      if (_pvpStateInterval) clearInterval(_pvpStateInterval);
+      _pvpStateInterval = setInterval(pvpSendState, 66);
+    }
+    else if (msg.type === 'team_room_state') {
+      /* Full snapshot — keep scores/team_scores in sync AND reconcile roster
+       * so late-joiners get avatars on existing clients (and players who left
+       * during the match are cleaned up). */
+      _teamTotals = msg.team_scores || _teamTotals;
+      if (msg.roster) {
+        const newNicks = new Set(msg.roster.map(e => e.nick));
+        /* 1) Build avatars for any newcomer that isn't us. */
+        for (const e of msg.roster) {
+          if (e.nick === PVP_NICKNAME) continue;
+          if (!_teamPlayers.has(e.nick)) {
+            const existingIdx = _teamRoster.findIndex(p => p.nick === e.nick);
+            if (existingIdx === -1) {
+              _teamRoster.push({ nick: e.nick, team: e.team, spawn: e.spawn || 0 });
+              if (typeof showNotice === 'function') {
+                showNotice('ИГРОК ' + e.nick + ' ПОДКЛЮЧИЛСЯ К КОМАНДЕ');
+              }
+            } else {
+              _teamRoster[existingIdx] = { nick: e.nick, team: e.team, spawn: e.spawn || 0 };
+            }
+            try { teamSpawnOpponent(e.nick); } catch(_) {}
+          }
+          _teamScores[e.nick] = e.kills || 0;
+        }
+        /* 2) Remove avatars for players no longer in the room. */
+        for (const nick of Array.from(_teamPlayers.keys())) {
+          if (!newNicks.has(nick)) {
+            const av = _teamPlayers.get(nick);
+            if (av && av.obj) {
+              try { scene.remove(av.obj); } catch(_) {}
+            }
+            _teamPlayers.delete(nick);
+            delete _teamScores[nick];
+          }
+        }
+        /* 3) Drop roster entries that are no longer present. */
+        _teamRoster = _teamRoster.filter(p => newNicks.has(p.nick) || p.nick === PVP_NICKNAME);
+      }
+      updateTeamScoreDisplay();
+    }
+    else if (msg.type === 'team_player_state') {
+      const av = _teamPlayers.get(msg.from);
+      if (av) av._lastRecv = msg;
+    }
+    else if (msg.type === 'team_player_shot') {
+      teamRenderPlayerShot(msg);
+    }
+    else if (msg.type === 'team_player_grenade') {
+      try {
+        const mesh = (msg.kind === 'frag') ? _buildFragMesh() : _buildSmokeCanMesh();
+        mesh.position.set(msg.ox, msg.oy, msg.oz);
+        scene.add(mesh);
+        grenades.push({
+          obj: mesh,
+          vel: new THREE.Vector3(msg.vx, msg.vy, msg.vz),
+          spin: msg.spin || 0,
+          kind: msg.kind,
+          fuse: msg.fuse || (msg.kind === 'frag' ? 3.4 : 1.4),
+          bounces: 0,
+          remote: true
+        });
+      } catch(_){}
+    }
+    else if (msg.type === 'team_took_damage') {
+      const dmg = msg.damage || 15;
+      player.health -= dmg;
+      _teamLastDamager = msg.from || '';
+      _teamLastDamageT = performance.now() / 1000;
+      if (typeof flashDamage === 'function') flashDamage();
+      if (typeof fxHitFlash === 'function') fxHitFlash();
+      if (typeof pushCamShake === 'function') pushCamShake(0.05);
+      if (typeof playHurt === 'function' && Math.random() < 0.6) playHurt();
+      if (player.health <= 0 && controls.isLocked && !_teamDying) {
+        player.health = 0;
+        player.stats.deaths += 1;
+        handleDeath();
+      }
+    }
+    else if (msg.type === 'team_round_over') {
+      _teamScores = msg.scores || _teamScores;
+      _teamTotals = msg.team_scores || _teamTotals;
+      updateTeamScoreDisplay();
+      const av = _teamPlayers.get(msg.killed);
+      if (av) av._dead = true;
+      const rmsg = document.getElementById('pvp-round-msg');
+      if (msg.killed === PVP_NICKNAME) {
+        if (rmsg) rmsg.textContent = 'ВЫ УБИТЫ! РЕСПАВН ЧЕРЕЗ 5 СЕК...';
+        showNotice((msg.killer || '???') + ' УБИЛ ВАС');
+        /* Trigger killcam if the server told us where the killer was. */
+        if (msg.killer && msg.killer_x !== null && msg.killer_x !== undefined) {
+          try { startKillcam(msg.killer, msg.killer_x, msg.killer_y, msg.killer_z,
+                              msg.killed_x, msg.killed_y, msg.killed_z); } catch(_){}
+        }
+      } else if (msg.killer === PVP_NICKNAME) {
+        showNotice('ВЫ УБИЛИ ' + msg.killed + '!');
+      } else {
+        showNotice((msg.killer || '???') + ' ←×→ ' + msg.killed);
+      }
+    }
+    else if (msg.type === 'team_match_end') {
+      _matchEnded = true;
+      _matchEndUntil = performance.now() / 1000 + 10;
+      _teamScores = msg.scores || _teamScores;
+      _teamTotals = msg.team_scores || _teamTotals;
+      updateTeamScoreDisplay();
+      showMatchEndScreen(msg.winner, msg.scores || {}, msg.team_scores || {});
+      try { controls.unlock(); } catch(_){}
+    }
+    else if (msg.type === 'team_respawn') {
+      _teamDying = false;
+      const rmsg = document.getElementById('pvp-round-msg');
+      if (rmsg) rmsg.textContent = '';
+      const pos = getTeamSpawnPos(msg.team || _teamMyTeam, msg.spawn || 0);
+      player.position.copy(pos);
+      player.velocity.set(0, 0, 0);
+      const yaw = getTeamSpawnYaw(msg.team || _teamMyTeam);
+      try { camera.rotation.y = yaw; camera.rotation.x = 0; } catch(_){}
+      player.health = player.maxHealth;
+      player.armor = player.armorMax;
+      if (player.inv.hasArmor) { player.plates.front = player.plateMax.front; player.plates.back = player.plateMax.back; }
+      if (player.inv.hasHelmet) { player.plates.helmet = player.plateMax.helmet; }
+      player.frag = player.fragMax; player.smoke = player.smokeMax;
+      player.bleeding = false; player.legSlow = 0; player._bleedT = 0;
+      _teamLastDamager = ''; _teamLastDamageT = 0;
+      if (player.activeWeapon) {
+        const stats = WEAPON_STATS[player.activeWeapon];
+        player.ammo = stats.magSize; player.reserve = 120;
+        const ws = player.weaponState[player.activeWeapon];
+        ws.ammo = player.ammo; ws.reserve = player.reserve;
+      }
+      for (const wk of ['ak', 'm416']) {
+        player.weaponState[wk].ammo = WEAPON_STATS[wk].magSize;
+        player.weaponState[wk].reserve = 120;
+      }
+      player.medkits = 6;             /* team mode — more supplies on respawn */
+      player.bandages = 6;
+      _teamScores = msg.scores || _teamScores;
+      _teamTotals = msg.team_scores || _teamTotals;
+      updateTeamScoreDisplay();
+      /* Mark me alive again so my own avatar shows for others (they handle locally) */
+      showNotice('НОВЫЙ РАУНД!');
+      if (!controls.isLocked) {
+        setTimeout(() => { if (!controls.isLocked) controls.lock(); }, 300);
+      }
+    }
+    else if (msg.type === 'team_player_left') {
+      const av = _teamPlayers.get(msg.nick);
+      if (av && av.obj) {
+        try { scene.remove(av.obj); } catch(_){}
+      }
+      _teamPlayers.delete(msg.nick);
+      showNotice(msg.nick + ' ПОКИНУЛ ИГРУ');
+    }
+    else if (msg.type === 'error') {
+      showNotice('ОШИБКА: ' + (msg.msg || ''));
+    }
+  }
+
+  /* ----- KILLCAM ----- */
+  function startKillcam(killerNick, kx, ky, kz, dx, dy, dz) {
+    if (_matchEnded) return;
+    _killcamActive = true;
+    _killcamUntil = performance.now() / 1000 + 2.0;
+    _killcamKillerNick = killerNick;
+    _killcamKillerPos = new THREE.Vector3(kx, ky, kz);
+    _killcamMyDeathPos = new THREE.Vector3(
+      dx !== null ? dx : player.position.x,
+      dy !== null ? dy : player.position.y,
+      dz !== null ? dz : player.position.z
+    );
+    /* Show killcam HUD */
+    const el = document.getElementById('killcam-overlay') || (function() {
+      const d = document.createElement('div');
+      d.id = 'killcam-overlay';
+      d.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+        'z-index:50;font-family:Consolas,monospace;text-align:center;pointer-events:none;' +
+        'color:#ff4040;text-shadow:0 0 10px #000;background:rgba(0,0,0,0.5);' +
+        'padding:18px 40px;border:2px solid #ff4040;border-radius:8px';
+      document.body.appendChild(d);
+      return d;
+    })();
+    el.innerHTML = '<div style="font-size:14px;letter-spacing:3px;color:#aaa;margin-bottom:6px">УБИТ ИГРОКОМ</div>' +
+      '<div style="font-size:26px;font-weight:bold">' + killerNick + '</div>';
+    el.style.display = 'block';
+  }
+
+  function updateKillcam() {
+    const overlay = document.getElementById('killcam-overlay');
+    if (!_killcamActive) {
+      if (overlay) overlay.style.display = 'none';
+      return;
+    }
+    const now = performance.now() / 1000;
+    if (now >= _killcamUntil) {
+      _killcamActive = false;
+      if (overlay) overlay.style.display = 'none';
+      return;
+    }
+    /* Look up the live killer position if their avatar is still updating;
+     * otherwise fall back to the snapshot. */
+    const av = _teamPlayers.get(_killcamKillerNick);
+    let pos = _killcamKillerPos;
+    if (av && av.obj && !av._dead) {
+      pos = av.obj.position;
+    }
+    /* Place the camera ~3m behind & above the killer, looking at where
+     * we died (so the player can see how they were flanked / cleaned up). */
+    const eyeY = (pos.y || 0) + 2.6;
+    /* Direction from killer toward victim — used to offset the cam behind. */
+    const dir = new THREE.Vector3().subVectors(_killcamMyDeathPos, pos);
+    dir.y = 0;
+    if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
+    dir.normalize();
+    /* Camera: behind & above the killer, facing the victim. */
+    camera.position.set(
+      pos.x - dir.x * 2.5,
+      eyeY,
+      pos.z - dir.z * 2.5
+    );
+    camera.lookAt(_killcamMyDeathPos.x, _killcamMyDeathPos.y + 1.0, _killcamMyDeathPos.z);
+  }
+
+  /* ----- MATCH END SCREEN ----- */
+  function showMatchEndScreen(winner, scores, teamScores) {
+    let el = document.getElementById('match-end-overlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'match-end-overlay';
+      el.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;' +
+        'align-items:center;justify-content:center;background:rgba(0,0,0,0.85);' +
+        'font-family:Consolas,monospace;color:#fff;pointer-events:auto';
+      document.body.appendChild(el);
+    }
+    const myTeamWon = winner === _teamMyTeam;
+    const titleColor = winner === 'DRAW' ? '#ffcc40' : (myTeamWon ? '#40ff80' : '#ff4040');
+    const title = winner === 'DRAW' ? 'НИЧЬЯ' : (myTeamWon ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ');
+    const sub = winner === 'DRAW' ? 'Время вышло' : ('Команда ' + (winner === 'A' ? 'СИНИЕ' : 'КРАСНЫЕ') + ' выигрывает');
+    /* Build leaderboard rows */
+    const sorted = Object.entries(scores).sort((a,b) => b[1] - a[1]);
+    let rows = '';
+    for (const [nick, kills] of sorted) {
+      const t = _teamRoster.find(r => r.nick === nick)?.team || '?';
+      const tColor = t === 'A' ? '#4a9eff' : '#ff6040';
+      const me = nick === PVP_NICKNAME ? ' style="background:rgba(255,255,255,0.1)"' : '';
+      rows += '<tr' + me + '><td style="color:' + tColor + ';padding:6px 16px">' + nick +
+        '</td><td style="padding:6px 16px;text-align:right;font-weight:bold">' + kills + '</td></tr>';
+    }
+    el.innerHTML =
+      '<div style="font-size:64px;font-weight:bold;color:' + titleColor + ';text-shadow:0 0 20px ' + titleColor + '">' + title + '</div>' +
+      '<div style="font-size:18px;color:#aaa;margin-bottom:24px">' + sub + '</div>' +
+      '<div style="display:flex;gap:60px;font-size:48px;font-weight:bold;margin-bottom:32px">' +
+        '<div style="color:#4a9eff">A: ' + (teamScores.A || 0) + '</div>' +
+        '<div style="color:#666">vs</div>' +
+        '<div style="color:#ff6040">B: ' + (teamScores.B || 0) + '</div>' +
+      '</div>' +
+      '<table style="border-collapse:collapse;font-size:18px;min-width:300px">' +
+        '<thead><tr><th style="padding:4px 16px;text-align:left;color:#aaa">ИГРОК</th><th style="padding:4px 16px;text-align:right;color:#aaa">УБИЙСТВ</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+      '<div style="margin-top:32px"><a href="/" style="color:#ffd060;font-size:18px;text-decoration:underline">⟵ Вернуться в меню</a></div>';
+    el.style.display = 'flex';
+  }
+
+  /* ----- TEAM HUD ----- */
+  function updateTeamScoreDisplay() {
+    const el = document.getElementById('pvp-scores');
+    if (!el) return;
+    const meTeam = _teamMyTeam;
+    const myTotal = _teamTotals[meTeam] || 0;
+    const enemyTeam = (meTeam === 'A') ? 'B' : 'A';
+    const enemyTotal = _teamTotals[enemyTeam] || 0;
+    /* Build the team scoreboard */
+    const allyEntries = _teamRoster.filter(p => p.team === meTeam)
+      .map(p => ({ nick: p.nick, kills: _teamScores[p.nick] || 0 }))
+      .sort((a, b) => b.kills - a.kills);
+    const enemyEntries = _teamRoster.filter(p => p.team === enemyTeam)
+      .map(p => ({ nick: p.nick, kills: _teamScores[p.nick] || 0 }))
+      .sort((a, b) => b.kills - a.kills);
+    const allyColor = '#44ddff';
+    const enemyColor = '#ff5040';
+    let html = '';
+    html += '<div style="font-size:24px;font-weight:bold;text-align:right;margin-bottom:6px">' +
+      '<span style="color:' + allyColor + '">' + myTotal + '</span>' +
+      ' <span style="color:#556">:</span> ' +
+      '<span style="color:' + enemyColor + '">' + enemyTotal + '</span></div>';
+    html += '<div style="font-size:11px;color:' + allyColor + ';margin-top:4px;text-align:right">МОЯ КОМАНДА</div>';
+    for (const e of allyEntries) {
+      const me = (e.nick === PVP_NICKNAME) ? ' style="font-weight:bold"' : '';
+      html += '<div' + me + ' style="font-size:13px;color:#cde;text-align:right">' +
+        e.nick + ' &nbsp; <b>' + e.kills + '</b></div>';
+    }
+    html += '<div style="font-size:11px;color:' + enemyColor + ';margin-top:6px;text-align:right">ПРОТИВНИК</div>';
+    for (const e of enemyEntries) {
+      html += '<div style="font-size:13px;color:#ecd;text-align:right">' +
+        e.nick + ' &nbsp; <b>' + e.kills + '</b></div>';
+    }
+    el.innerHTML = html;
+  }
+
+  /* ----- TEAM-MODE WS CONNECT (overrides pvpConnect for team mode) ----- */
+  function teamConnect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _pvpWs = new WebSocket(proto + '//' + location.host + '/ws');
+    _pvpWs.onopen = () => {
+      _pvpWs.send(JSON.stringify({
+        type: 'team_join_room', room: PVP_ROOM, nickname: PVP_NICKNAME
+      }));
+    };
+    _pvpWs.onmessage = (e) => {
+      try { teamHandleMessage(JSON.parse(e.data)); } catch(_){}
+    };
+    _pvpWs.onclose = () => {
+      showNotice('СОЕДИНЕНИЕ ПОТЕРЯНО — ПЕРЕПОДКЛЮЧЕНИЕ...');
+      setTimeout(teamConnect, 2000);
+    };
+    _pvpWs.onerror = () => {};
+  }
+
+  /* Override pvpSendState to use team_state payload in team mode. */
+  if (TEAM_MODE) {
+    pvpSendState = function() {
+      if (!_pvpWs || _pvpWs.readyState !== WebSocket.OPEN) return;
+      if (!controls.isLocked) return;
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      _pvpWs.send(JSON.stringify({
+        type: 'team_state',
+        x: player.position.x, y: player.position.y, z: player.position.z,
+        rx: fwd.x, ry: fwd.y, rz: fwd.z,
+        w: player.activeWeapon || '',
+        aim: player.isAiming ? 1 : 0,
+        hp: player.health
+      }));
+    };
+  }
+
+  /* ===== TEAM MODE MAP EXPANSION =====================================
+   * For 5v5 we extend the play area south→north by ~50% (160 → 240 units)
+   * and pack a lot more cover into the corridor so positional play matters.
+   * All meshes are scene-attached, all colliders registered. */
+  function teamBuildExpandedMap() {
+    /* Mirror the equip board at the new TEAM B end (z = -222) so spawn 2
+     * is fully equipped exactly like spawn 1. */
+    try {
+      if (typeof mirrorEquipBoardAt === 'function') {
+        mirrorEquipBoardAt(0, -221.0, Math.PI);
+      }
+    } catch(e) {}
+
+    /* Many houses to break sight lines across the long corridor. */
+    if (typeof addDecorativeHouse === 'function') {
+      const houses = [
+        [-22,  -10,    0,        0],
+        [ 22,  -25, -0.3,        1],
+        [-18,  -45,  0.2,        0],
+        [ 24,  -65, -0.1,        1],
+        [-26,  -90,  0.4,        0],
+        [ 18, -110,  Math.PI,    1],
+        [-22, -130, -0.2,        0],
+        [ 26, -155,  Math.PI/2,  1],
+        [-18, -175,  0,          0],
+        [ 22, -195,  Math.PI,    1],
+      ];
+      for (const h of houses) addDecorativeHouse(h[0], h[1], h[2], h[3]);
+    }
+
+    /* Sandbag clusters — chest-high cover along the lanes. */
+    if (typeof addSandbagCluster === 'function') {
+      const sandbags = [
+        [  0,   -5, 4.0, 0],
+        [ 10,  -20, 3.0, Math.PI/4],
+        [-10,  -35, 3.5, 0],
+        [  6,  -50, 3.0, -Math.PI/6],
+        [ -8,  -68, 3.2, Math.PI/5],
+        [ 12,  -85, 3.0, 0],
+        [ -6,  -98, 3.5, Math.PI/3],
+        [  4, -115, 2.8, 0],
+        [-12, -130, 3.0, -Math.PI/4],
+        [  8, -148, 3.2, 0],
+        [-10, -162, 3.0, Math.PI/6],
+        [  6, -178, 3.4, 0],
+        [ -8, -195, 3.0, Math.PI/3],
+        [ 10, -210, 3.0, 0],
+      ];
+      for (const s of sandbags) addSandbagCluster(s[0], s[1], s[2], s[3]);
+    }
+
+    /* Crate piles for quick peeks. */
+    if (typeof addCratePile === 'function') {
+      const crates = [
+        [ -5, -12, 3], [ 15, -28, 11], [-18, -42, 23], [  5, -58, 41],
+        [ -8, -74, 59], [ 14, -92, 77], [-15, -108, 91], [  7, -125, 109],
+        [-12, -142, 127], [ 14, -158, 145], [-16, -176, 163], [  8, -192, 181],
+        [-10, -206, 199], [ 12, -218, 217],
+      ];
+      for (const c of crates) addCratePile(c[0], c[1], c[2]);
+    }
+  }
+
+  if (TEAM_MODE) {
+    try { teamBuildExpandedMap(); }
+    catch (e) { console.warn('[team] map expansion failed:', e && e.message); }
+    teamInstallHooks();
+    /* Pre-populate the scoreboard from the URL-supplied roster so the HUD
+     * is non-empty even before the server's first state broadcast. */
+    for (const entry of _teamRoster) {
+      if (!(entry.nick in _teamScores)) _teamScores[entry.nick] = 0;
+    }
+    teamBuildRoster();
+    updateTeamScoreDisplay();
+    teamConnect();
+  } else {
+    pvpConnect();
+  }
+
 
   /* Hide CTF objective HUD elements in PVP mode */
   const objPanel = document.getElementById('objective');
@@ -10456,7 +11182,29 @@ if (PVP_MODE) {
       '<span style="color:#ff8a8a">ПРАВИЛА:</span> убейте противника. Респавн через 5 секунд. Раунды бесконечны.<br>' +
       '<span style="color:#90ff90">СЧЁТ:</span> побеждает тот, кто убил противника. Счёт отображается в правом верхнем углу.';
   }
-  showNotice('PVP MODE — ОЖИДАНИЕ ПРОТИВНИКА');
+  if (TEAM_MODE) {
+    const menuEl2 = document.getElementById('menu');
+    if (menuEl2) {
+      const h1 = menuEl2.querySelector('h1');
+      if (h1) h1.textContent = 'КОМАНДНАЯ АРЕНА';
+      const sub = menuEl2.querySelector('.subtitle');
+      if (sub) sub.textContent = 'до 5 на 5 · командный бой';
+      const ctrl = menuEl2.querySelector('.controls');
+      const myColor = (TEAM_SIDE === 'A') ? '#44ddff' : '#ff5040';
+      const myName  = (TEAM_SIDE === 'A') ? 'СИНИЕ' : 'КРАСНЫЕ';
+      if (ctrl) ctrl.innerHTML =
+        '<b>WASD</b> — двигаться | <b>SHIFT</b> — бежать | <b>SPACE</b> — прыжок | <b>CTRL</b> — присесть | <b>Q / E</b> — наклон<br>' +
+        '<b>МЫШЬ</b> — обзор | <b>ЛКМ</b> — стрелять | <b>ПКМ</b> — прицелиться | <b>R</b> — перезарядка<br>' +
+        '<b>1</b> — АКМ | <b>2</b> — M416 | <b>3</b> — аптечка | <b>B</b> — прицел | <b>O</b> — глушитель<br><br>' +
+        '<span style="color:' + myColor + '">КОМАНДА:</span> <b style="color:' + myColor + '">' + myName + '</b><br>' +
+        '<span style="color:#ffd060">СНАРЯЖЕНИЕ:</span> АКМ, M416, броня, шлем — выдаётся автоматически<br>' +
+        '<span style="color:#ff8a8a">ПРАВИЛА:</span> убивайте противников. Огонь по своим выключен. Респавн через 5 сек.<br>' +
+        '<span style="color:#90ff90">СЧЁТ:</span> лидерборд по убийствам игроков + общий счёт команд (справа сверху).';
+    }
+    showNotice('КОМАНДНЫЙ РЕЖИМ — ' + ((TEAM_SIDE === 'A') ? 'СИНИЕ' : 'КРАСНЫЕ'));
+  } else {
+    showNotice('PVP MODE — ОЖИДАНИЕ ПРОТИВНИКА');
+  }
 }
 
 </script>

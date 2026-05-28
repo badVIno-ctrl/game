@@ -6,10 +6,9 @@
 <title>FPS ARENA</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;color:#e0e0e0;user-select:none}
-body{background:linear-gradient(160deg,#0a0c10 0%,#121820 40%,#0e1218 100%);display:flex;flex-direction:column;align-items:center;justify-content:center}
+html,body{width:100%;height:100%;overflow:auto;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;color:#e0e0e0;user-select:none}
+body{background:linear-gradient(160deg,#0a0c10 0%,#121820 40%,#0e1218 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:32px 16px}
 
-/* subtle animated grain */
 body::before{content:'';position:fixed;inset:0;pointer-events:none;opacity:.04;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='3'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.7'/></svg>");
   mix-blend-mode:overlay}
@@ -19,7 +18,7 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
   text-shadow:0 0 40px rgba(255,120,60,.25);margin-bottom:8px}
 .subtitle{font-size:14px;color:#667;letter-spacing:3px;margin-bottom:48px;text-transform:uppercase}
 
-.cards{display:flex;gap:32px;flex-wrap:wrap;justify-content:center}
+.cards{display:flex;gap:32px;flex-wrap:wrap;justify-content:center;max-width:1200px}
 
 .card{
   width:280px;height:340px;border-radius:16px;cursor:pointer;position:relative;overflow:hidden;
@@ -46,12 +45,19 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
 .card.online .card-icon{color:var(--accent)}
 .card.online h2{color:var(--accent)}
 
-/* Lobby overlay */
-#lobby{display:none;position:fixed;inset:0;background:rgba(6,8,12,.95);z-index:100;
-  flex-direction:column;align-items:center;justify-content:center;gap:20px}
-#lobby.active{display:flex}
+.card.team{--accent:#a060ff}
+.card.team:hover{border-color:var(--accent);box-shadow:0 16px 48px rgba(160,96,255,.18)}
+.card.team .card-icon{color:var(--accent)}
+.card.team h2{color:var(--accent)}
 
-#lobby h2{font-size:28px;font-weight:700;letter-spacing:3px;color:#ff6040;margin-bottom:12px}
+/* Lobby overlay */
+#lobby,#teamLobby{display:none;position:fixed;inset:0;background:rgba(6,8,12,.95);z-index:100;
+  flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px;overflow:auto}
+#lobby.active,#teamLobby.active{display:flex}
+
+#lobby h2,#teamLobby h2{font-size:28px;font-weight:700;letter-spacing:3px;margin-bottom:12px}
+#lobby h2{color:#ff6040}
+#teamLobby h2{color:#a060ff}
 
 .lobby-box{
   width:360px;max-width:90vw;background:rgba(20,24,32,.95);border:1px solid rgba(255,255,255,.08);
@@ -61,8 +67,7 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
 .lobby-box label{font-size:13px;color:#8899aa;letter-spacing:1px;text-transform:uppercase}
 .lobby-box input{
   width:100%;padding:12px 16px;border:1px solid rgba(255,255,255,.1);border-radius:8px;
-  background:rgba(10,12,18,.8);color:#e0e0e0;font-size:16px;outline:none;
-  transition:border-color .2s
+  background:rgba(10,12,18,.8);color:#e0e0e0;font-size:16px;outline:none;transition:border-color .2s
 }
 .lobby-box input:focus{border-color:#ff6040}
 .lobby-box button{
@@ -73,16 +78,18 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
 .btn-primary{background:linear-gradient(135deg,#ff6040,#ff8060);color:#fff}
 .btn-primary:hover{background:linear-gradient(135deg,#ff7050,#ff9070)}
 .btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-team{background:linear-gradient(135deg,#8050d0,#a060ff);color:#fff}
+.btn-team:hover{background:linear-gradient(135deg,#9060e0,#b070ff)}
+.btn-team:disabled{opacity:.4;cursor:not-allowed}
 .btn-secondary{background:rgba(255,255,255,.06);color:#aab;border:1px solid rgba(255,255,255,.08)!important}
 .btn-secondary:hover{background:rgba(255,255,255,.1)}
 
 #lobby-status{font-size:14px;color:#8899aa;text-align:center;min-height:20px}
-#lobby-error{font-size:13px;color:#ff5040;text-align:center;min-height:18px}
+#lobby-error,#lobby-error2,#team-error{font-size:13px;color:#ff5040;text-align:center;min-height:18px}
 
 .step{display:none}
 .step.active{display:flex;flex-direction:column;gap:16px}
 
-/* spinner */
 .spinner{width:24px;height:24px;border:3px solid rgba(255,255,255,.15);border-top-color:#ff6040;
   border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -90,6 +97,34 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
 .back-btn{position:absolute;top:20px;left:20px;background:none;border:1px solid rgba(255,255,255,.1);
   color:#889;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;letter-spacing:1px}
 .back-btn:hover{border-color:rgba(255,255,255,.2);color:#bbc}
+
+/* Team lobby layout */
+.team-board{
+  display:flex;gap:20px;width:880px;max-width:95vw;align-items:stretch
+}
+.team-col{
+  flex:1;background:rgba(18,22,30,.92);border:1px solid rgba(255,255,255,.07);
+  border-radius:12px;padding:20px;min-height:280px;display:flex;flex-direction:column
+}
+.team-col.A{border-top:3px solid #4a9eff}
+.team-col.B{border-top:3px solid #ff5040}
+.team-col h3{font-size:18px;letter-spacing:2px;margin-bottom:12px;text-align:center}
+.team-col.A h3{color:#4a9eff}
+.team-col.B h3{color:#ff5040}
+.team-col .count{font-size:13px;color:#778;text-align:center;margin-bottom:10px}
+.team-col ul{list-style:none;flex:1;display:flex;flex-direction:column;gap:6px}
+.team-col li{
+  padding:9px 12px;background:rgba(255,255,255,.04);border-radius:6px;font-size:14px;
+  display:flex;justify-content:space-between;align-items:center
+}
+.team-col li.self{background:rgba(160,96,255,.18);border:1px solid rgba(160,96,255,.4)}
+.team-col li .badge{font-size:10px;color:#a8a;letter-spacing:1px}
+
+.team-controls{display:flex;flex-direction:column;gap:12px;align-items:center;margin-top:8px;width:100%}
+.team-controls .row{display:flex;gap:12px;width:880px;max-width:95vw}
+.team-controls .row button{flex:1;padding:14px;border:none;border-radius:8px;font-size:15px;font-weight:700;
+  letter-spacing:1px;cursor:pointer;text-transform:uppercase;transition:all .15s}
+#team-status{font-size:13px;color:#8899aa;text-align:center;min-height:18px}
 </style>
 </head>
 <body>
@@ -108,14 +143,18 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
     <h2>ОНЛАЙН PVP</h2>
     <p>1 на 1 с другом. Найди противника по нику и сражайтесь на арене.</p>
   </div>
+  <div class="card team" onclick="openTeamLobby()">
+    <div class="card-icon">🛡️</div>
+    <h2>ИГРА КОМАНДАМИ</h2>
+    <p>До 5 на 5. Автораспределение по командам. Расширенная карта с укрытиями.</p>
+  </div>
 </div>
 
-<!-- Lobby overlay -->
+<!-- 1v1 Lobby overlay -->
 <div id="lobby">
   <button class="back-btn" onclick="closeLobby()">← НАЗАД</button>
   <h2>ОНЛАЙН АРЕНА</h2>
 
-  <!-- Step 1: Enter nickname -->
   <div class="lobby-box step active" id="step-nick">
     <label>Введите ваш никнейм</label>
     <input type="text" id="input-nick" placeholder="Ваш ник..." maxlength="24" autocomplete="off">
@@ -123,7 +162,6 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
     <button class="btn-primary" id="btn-register" onclick="doRegister()">ВОЙТИ</button>
   </div>
 
-  <!-- Step 2: Find opponent -->
   <div class="lobby-box step" id="step-find">
     <label>Вы: <span id="my-nick" style="color:#ff6040;font-weight:700"></span></label>
     <label style="margin-top:8px">С кем хотите играть?</label>
@@ -133,7 +171,6 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
     <div id="lobby-status"></div>
   </div>
 
-  <!-- Step 3: Connecting -->
   <div class="lobby-box step" id="step-connect">
     <div style="text-align:center">
       <div class="spinner"></div>
@@ -142,44 +179,130 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
   </div>
 </div>
 
+<!-- Team Lobby overlay -->
+<div id="teamLobby">
+  <button class="back-btn" onclick="closeTeamLobby()">← НАЗАД</button>
+  <h2>КОМАНДНАЯ ИГРА</h2>
+
+  <div class="lobby-box step active" id="tstep-nick">
+    <label>Введите ваш никнейм</label>
+    <input type="text" id="tinput-nick" placeholder="Ваш ник..." maxlength="24" autocomplete="off">
+    <div id="team-error"></div>
+    <button class="btn-team" id="tbtn-join" onclick="doTeamJoin()">ВОЙТИ В ЛОББИ</button>
+    <p style="font-size:12px;color:#778;line-height:1.5;margin-top:4px">
+      Тебя автоматически закинут в команду с меньшим числом игроков.<br>
+      Максимум 5 на 5. Игра не начнётся, если в одной команде 0 человек.
+    </p>
+  </div>
+
+  <div class="lobby-box step" id="tstep-lobby" style="width:auto">
+    <div style="text-align:center;color:#aab;font-size:13px">
+      Вы: <b id="t-mynick" style="color:#a060ff"></b>
+      &nbsp;·&nbsp; Команда: <b id="t-myteam"></b>
+    </div>
+    <div class="team-board">
+      <div class="team-col A">
+        <h3>СИНИЕ (Team A)</h3>
+        <div class="count" id="t-countA">0 / 5</div>
+        <ul id="t-listA"></ul>
+      </div>
+      <div class="team-col B">
+        <h3>КРАСНЫЕ (Team B)</h3>
+        <div class="count" id="t-countB">0 / 5</div>
+        <ul id="t-listB"></ul>
+      </div>
+    </div>
+    <div class="team-controls">
+      <div class="row">
+        <button class="btn-secondary" onclick="closeTeamLobby()">ВЫЙТИ</button>
+        <button class="btn-team" id="t-startBtn" onclick="doTeamStart()" disabled>СТАРТ ИГРЫ</button>
+      </div>
+      <div id="team-status">Жду как минимум по 1 игроку в каждой команде…</div>
+    </div>
+  </div>
+
+  <div class="lobby-box step" id="tstep-connect">
+    <div style="text-align:center">
+      <div class="spinner"></div>
+      <p style="margin-top:16px;color:#aab" id="tconnect-msg">Загрузка матча...</p>
+    </div>
+  </div>
+</div>
+
 <script>
 let ws = null;
 let myNickname = '';
+let mode = '';        // '', 'pvp', 'team'
+let myTeam = '';
 
-function openLobby() {
-  document.getElementById('lobby').classList.add('active');
-  connectWS();
+/* === Shared WebSocket === */
+function connectWS(onOpen) {
+  if (ws && ws.readyState === WebSocket.OPEN) { if (onOpen) onOpen(); return; }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onopen = () => { if (onOpen) onOpen(); };
+  ws.onmessage = (e) => {
+    try { handleMessage(JSON.parse(e.data)); } catch(_){}
+  };
+  ws.onclose = () => {
+    // Auto-reconnect only while a lobby is open.
+    if (document.getElementById('lobby').classList.contains('active') ||
+        document.getElementById('teamLobby').classList.contains('active')) {
+      setTimeout(() => connectWS(), 2000);
+    }
+  };
+  ws.onerror = () => {};
 }
 
+/* === 1v1 PvP lobby === */
+function openLobby() {
+  mode = 'pvp';
+  document.getElementById('lobby').classList.add('active');
+  showStep('step-nick');
+  connectWS();
+}
 function closeLobby() {
   document.getElementById('lobby').classList.remove('active');
   if (ws) { ws.close(); ws = null; }
+  mode = '';
   showStep('step-nick');
 }
-
 function showStep(id) {
-  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('#lobby .step').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('active');
 }
 
-function connectWS() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
-  ws.onopen = () => {};
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    handleMessage(msg);
-  };
-  ws.onclose = () => {
-    // Try reconnect after 2s if lobby is open
-    if (document.getElementById('lobby').classList.contains('active')) {
-      setTimeout(connectWS, 2000);
-    }
-  };
+/* === Team lobby === */
+function openTeamLobby() {
+  mode = 'team';
+  document.getElementById('teamLobby').classList.add('active');
+  tShowStep('tstep-nick');
+  connectWS();
+}
+function closeTeamLobby() {
+  document.getElementById('teamLobby').classList.remove('active');
+  if (ws) {
+    try { ws.send(JSON.stringify({ type: 'team_leave_lobby' })); } catch(_){}
+    ws.close(); ws = null;
+  }
+  mode = '';
+  myNickname = ''; myTeam = '';
+  tShowStep('tstep-nick');
+}
+function tShowStep(id) {
+  document.querySelectorAll('#teamLobby .step').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('active');
 }
 
+/* === Inbound message router === */
 function handleMessage(msg) {
+  if (mode === 'pvp')  return handlePvp(msg);
+  if (mode === 'team') return handleTeam(msg);
+}
+
+function handlePvp(msg) {
   if (msg.type === 'registered') {
     myNickname = msg.nickname;
     document.getElementById('my-nick').textContent = myNickname;
@@ -189,11 +312,8 @@ function handleMessage(msg) {
   else if (msg.type === 'error') {
     const e1 = document.getElementById('lobby-error');
     const e2 = document.getElementById('lobby-error2');
-    if (document.getElementById('step-nick').classList.contains('active')) {
-      e1.textContent = msg.msg;
-    } else {
-      e2.textContent = msg.msg;
-    }
+    if (document.getElementById('step-nick').classList.contains('active')) e1.textContent = msg.msg;
+    else e2.textContent = msg.msg;
   }
   else if (msg.type === 'not_found') {
     document.getElementById('lobby-error2').textContent =
@@ -205,27 +325,83 @@ function handleMessage(msg) {
     showStep('step-connect');
     document.getElementById('connect-msg').textContent =
       'Противник найден: ' + msg.opponent + '. Загрузка...';
-    // Redirect to game
     setTimeout(() => {
       const params = new URLSearchParams({
-        mode: 'pvp',
-        room: msg.room,
-        nickname: myNickname,
-        spawn: String(msg.spawn),
-        opponent: msg.opponent
+        mode: 'pvp', room: msg.room, nickname: myNickname,
+        spawn: String(msg.spawn), opponent: msg.opponent
       });
       location.href = '/game?' + params.toString();
     }, 800);
   }
 }
 
+function handleTeam(msg) {
+  if (msg.type === 'team_joined') {
+    myNickname = msg.nickname;
+    myTeam = msg.team;
+    document.getElementById('t-mynick').textContent = myNickname;
+    const tEl = document.getElementById('t-myteam');
+    tEl.textContent = (msg.team === 'A') ? 'СИНИЕ' : 'КРАСНЫЕ';
+    tEl.style.color = (msg.team === 'A') ? '#4a9eff' : '#ff5040';
+    tShowStep('tstep-lobby');
+  }
+  else if (msg.type === 'team_lobby_state') {
+    renderTeamLobby(msg);
+  }
+  else if (msg.type === 'error') {
+    document.getElementById('team-error').textContent = msg.msg;
+    if (document.getElementById('t-startBtn')) {
+      document.getElementById('t-startBtn').disabled = false;
+    }
+  }
+  else if (msg.type === 'team_match_start') {
+    tShowStep('tstep-connect');
+    document.getElementById('tconnect-msg').textContent = 'Матч стартует! Загрузка...';
+    setTimeout(() => {
+      const params = new URLSearchParams({
+        mode: 'team', room: msg.room, nickname: msg.nickname,
+        team: msg.team, spawn: String(msg.spawn),
+        roster: JSON.stringify(msg.roster || [])
+      });
+      location.href = '/game?' + params.toString();
+    }, 600);
+  }
+}
+
+function renderTeamLobby(snap) {
+  const ulA = document.getElementById('t-listA');
+  const ulB = document.getElementById('t-listB');
+  ulA.innerHTML = ''; ulB.innerHTML = '';
+  const renderInto = (ul, names) => {
+    for (const n of names) {
+      const li = document.createElement('li');
+      if (n === myNickname) li.className = 'self';
+      li.innerHTML = '<span>' + escapeHtml(n) + '</span>' +
+        (n === myNickname ? '<span class="badge">ВЫ</span>' : '');
+      ul.appendChild(li);
+    }
+  };
+  renderInto(ulA, snap.teamA || []);
+  renderInto(ulB, snap.teamB || []);
+  document.getElementById('t-countA').textContent = (snap.teamA || []).length + ' / ' + (snap.max_per_team || 5);
+  document.getElementById('t-countB').textContent = (snap.teamB || []).length + ' / ' + (snap.max_per_team || 5);
+  const canStart = !!snap.can_start;
+  const btn = document.getElementById('t-startBtn');
+  btn.disabled = !canStart;
+  document.getElementById('team-status').textContent = canStart
+    ? 'Можно стартовать!'
+    : 'Жду как минимум по 1 игроку в каждой команде…';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* === Outbound (1v1) === */
 function doRegister() {
   const nick = document.getElementById('input-nick').value.trim();
   document.getElementById('lobby-error').textContent = '';
-  if (!nick) {
-    document.getElementById('lobby-error').textContent = 'Введите никнейм';
-    return;
-  }
+  if (!nick) { document.getElementById('lobby-error').textContent = 'Введите никнейм'; return; }
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     document.getElementById('lobby-error').textContent = 'Нет соединения с сервером';
     connectWS();
@@ -237,10 +413,7 @@ function doRegister() {
 function doFind() {
   const target = document.getElementById('input-target').value.trim();
   document.getElementById('lobby-error2').textContent = '';
-  if (!target) {
-    document.getElementById('lobby-error2').textContent = 'Введите ник противника';
-    return;
-  }
+  if (!target) { document.getElementById('lobby-error2').textContent = 'Введите ник противника'; return; }
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     document.getElementById('lobby-error2').textContent = 'Нет соединения с сервером';
     return;
@@ -250,11 +423,31 @@ function doFind() {
   ws.send(JSON.stringify({ type: 'find', target: target }));
 }
 
-// Enter key handling
+/* === Outbound (team) === */
+function doTeamJoin() {
+  const nick = document.getElementById('tinput-nick').value.trim();
+  document.getElementById('team-error').textContent = '';
+  if (!nick) { document.getElementById('team-error').textContent = 'Введите никнейм'; return; }
+  const send = () => ws.send(JSON.stringify({ type: 'team_join', nickname: nick }));
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    connectWS(send);
+  } else {
+    send();
+  }
+}
+
+function doTeamStart() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  document.getElementById('t-startBtn').disabled = true;
+  ws.send(JSON.stringify({ type: 'team_start' }));
+}
+
+/* === Enter key === */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     if (document.getElementById('step-nick').classList.contains('active')) doRegister();
     else if (document.getElementById('step-find').classList.contains('active')) doFind();
+    else if (document.getElementById('tstep-nick').classList.contains('active')) doTeamJoin();
   }
 });
 </script>

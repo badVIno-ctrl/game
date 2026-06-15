@@ -5537,18 +5537,34 @@ const PVP_SPAWN_YAWS = [0, Math.PI];
  * in a mirrored fan north at z=-220 area. Spawns are spaced ~6m apart so
  * teammates don't telefrag, and each row of 5 forms a slight arc. */
 const TEAM_A_SPAWNS = [
-  new THREE.Vector3(-12, 1.7,  25.0),
-  new THREE.Vector3( -6, 1.7,  22.0),
+  /* Front row (closer to no-man's-land) */
+  new THREE.Vector3(-18, 1.7,  24.0),
+  new THREE.Vector3( -9, 1.7,  21.5),
   new THREE.Vector3(  0, 1.7,  20.7),   /* center — same as legacy spawn 0 */
-  new THREE.Vector3(  6, 1.7,  22.0),
-  new THREE.Vector3( 12, 1.7,  25.0),
+  new THREE.Vector3(  9, 1.7,  21.5),
+  new THREE.Vector3( 18, 1.7,  24.0),
+  /* Back row (10v10 expansion) */
+  new THREE.Vector3(-14, 1.7,  30.0),
+  new THREE.Vector3( -5, 1.7,  31.5),
+  new THREE.Vector3(  5, 1.7,  31.5),
+  new THREE.Vector3( 14, 1.7,  30.0),
+  new THREE.Vector3(  0, 1.7,  33.0),
 ];
 const TEAM_B_SPAWNS = [
-  new THREE.Vector3(-12, 1.7, -220.0),
-  new THREE.Vector3( -6, 1.7, -222.5),
-  new THREE.Vector3(  0, 1.7, -224.0),
-  new THREE.Vector3(  6, 1.7, -222.5),
-  new THREE.Vector3( 12, 1.7, -220.0),
+  /* Front row (closer to no-man's-land) — mirror of team A around the
+   * z=-138.5 equipment board, which is the proven-playable mirror spot the
+   * 1v1 mode already uses. Kept well inside the +/-195 map clamp. */
+  new THREE.Vector3(-18, 1.7, -142.0),
+  new THREE.Vector3( -9, 1.7, -139.5),
+  new THREE.Vector3(  0, 1.7, -138.7),
+  new THREE.Vector3(  9, 1.7, -139.5),
+  new THREE.Vector3( 18, 1.7, -142.0),
+  /* Back row (10v10 expansion) */
+  new THREE.Vector3(-14, 1.7, -148.0),
+  new THREE.Vector3( -5, 1.7, -149.5),
+  new THREE.Vector3(  5, 1.7, -149.5),
+  new THREE.Vector3( 14, 1.7, -148.0),
+  new THREE.Vector3(  0, 1.7, -151.0),
 ];
 const TEAM_A_YAW = 0;        /* face north (-Z) toward enemy team */
 const TEAM_B_YAW = Math.PI;  /* face south (+Z) toward enemy team */
@@ -6326,6 +6342,11 @@ function shoot() {
   if (!player.activeWeapon) return;
   if (player.reloading) return;
   if (player.bandaging) return;
+  /* B2 — can't fire while the gun is still lowered from a tactical sprint.
+   * The weapon must finish raising first (forces a short ~0.2s shoulder
+   * time, like real bodycam footage), which the smoothed _sprintLowT does
+   * automatically. Threshold 0.45 = roughly half-raised. */
+  if ((player._sprintLowT || 0) > 0.45) return;
   if (now - player.lastShot < player.fireRate) return;
   /* === A5 — JAM (weapon stoppage) ====================================
    * If the barrel ran hot (_heatLevel > 0.85), each subsequent shot has
@@ -6593,7 +6614,6 @@ function updateBullets(dt) {
         if (zone.label === 'HEADSHOT') showNotice('HEADSHOT');
         else if (zone.label === 'CHEST KILL') showNotice('CHEST KILL');
         if ((hitBot.health <= 0 || zone.killed) && hitBot.state !== 'dead') {
-          player.stats.kills += 1;
           killBot(hitBot);
           const dirNorm = b.vel.clone().normalize();
           if (typeof startRagdoll === 'function') startRagdoll(hitBot, dirNorm);
@@ -6719,6 +6739,8 @@ function updateBullets(dt) {
 }
 
 function killBot(bot) {
+  if (!bot || bot.state === 'dead' || bot._countedDead) return;
+  bot._countedDead = true;
   bot.state = 'dead';
   bot.deathTime = performance.now() / 1000;
   /* Topple over */
@@ -6728,6 +6750,7 @@ function killBot(bot) {
   bot.hbBg.visible = false;
   bot.hbFg.visible = false;
   player.score += 100;
+  player.stats.kills = (player.stats.kills || 0) + 1;
   addKillFeed('YOU killed ENEMY');
 
   /* Fire-and-smoke burst at the body location — visible "kill" feedback */
@@ -7263,6 +7286,27 @@ function updatePlayer(dt) {
       tgtRotX = THREE.MathUtils.lerp(tgtRotX, 0.70, wt);
     }
   } catch (_) {}
+  /* === TACTICAL SPRINT LOWER (B2) ===================================
+   * While sprinting, the shooter drops the muzzle toward the ground and
+   * cants the weapon inboard (a tactical-sprint / lowered-ready pose, as
+   * in Battlefield / bodycam footage). Driven by a smoothed 0->1 value so
+   * it eases in/out, and suppressed while aiming so ADS always wins. */
+  {
+    const sprintLowTarget = (sprinting && !player.isAiming) ? 1 : 0;
+    player._sprintLowT = (player._sprintLowT || 0) +
+      (sprintLowTarget - (player._sprintLowT || 0)) * (1 - Math.pow(0.0009, dt));
+    const sl = player._sprintLowT;
+    if (sl > 0.001) {
+      tgtBlended = tgtBlended.clone();
+      tgtBlended.y = THREE.MathUtils.lerp(tgtBlended.y, tgtBlended.y - 0.16, sl);
+      tgtBlended.x = THREE.MathUtils.lerp(tgtBlended.x, tgtBlended.x + 0.06, sl);
+      tgtBlended.z = THREE.MathUtils.lerp(tgtBlended.z, -0.16, sl);
+      tgtRotX = THREE.MathUtils.lerp(tgtRotX, 0.95, sl);
+      player._sprintCantZ = -0.55 * sl;
+    } else {
+      player._sprintCantZ = 0;
+    }
+  }
 
   weapon.position.lerp(tgtBlended, 1 - Math.pow(0.0001, dt));
   weapon.rotation.x += (tgtRotX - weapon.rotation.x) * (1 - Math.pow(0.0001, dt));
@@ -7335,6 +7379,8 @@ function updatePlayer(dt) {
   weapon.rotation.z *= Math.pow(0.001, dt);
   if (Math.abs(weapon.rotation.z) < 0.0005) weapon.rotation.z = 0;
   weapon.rotation.z += wobbleZ;
+  /* B2 — add the tactical-sprint inboard cant on top (frame-only) */
+  if (player._sprintCantZ) weapon.rotation.z += player._sprintCantZ;
 
   /* Bolt slide animation: handle goes back ~3.5cm then snaps forward.
    * boltKick: 1.0 (just fired) -> 0.0 (rest). We model it as half-cosine. */
@@ -9826,24 +9872,24 @@ if (PVP_MODE) {
     g.add(vest);
     /* Front armor plate (darker inset) */
     const plate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.46, 0.04), matVestDark);
-    plate.position.set(0, 1.22, 0.18);
+    plate.position.set(0, 0.0, 0.18);  /* vest-local (vest is at y=1.22) */
     vest.add(plate);
     /* Three MOLLE mag pouches across the front */
     for (let i = -1; i <= 1; i++) {
       const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.18, 0.06), matVestDark);
-      pouch.position.set(i * 0.15, 1.10, 0.21);
+      pouch.position.set(i * 0.15, -0.12, 0.21);  /* vest-local */
       vest.add(pouch);
     }
     /* Shoulder straps */
     const strapGeo = new THREE.BoxGeometry(0.12, 0.34, 0.05);
     const strapL = new THREE.Mesh(strapGeo, matVest);
-    strapL.position.set(-0.20, 1.42, 0.05); strapL.rotation.z = 0.15; vest.add(strapL);
+    strapL.position.set(-0.20, 0.20, 0.05); strapL.rotation.z = 0.15; vest.add(strapL);  /* vest-local */
     const strapR = strapL.clone(); strapR.position.x = 0.20; strapR.rotation.z = -0.15; vest.add(strapR);
     /* Radio antenna on left shoulder */
     const antenna = new THREE.Mesh(
       new THREE.CylinderGeometry(0.008, 0.012, 0.30, 6), matMetal
     );
-    antenna.position.set(-0.22, 1.62, 0.05);
+    antenna.position.set(-0.22, 0.40, 0.05);  /* vest-local */
     antenna.rotation.z = -0.18;
     vest.add(antenna);
 
@@ -11088,7 +11134,7 @@ if (PVP_MODE) {
      * is fully equipped exactly like spawn 1. */
     try {
       if (typeof mirrorEquipBoardAt === 'function') {
-        mirrorEquipBoardAt(0, -221.0, Math.PI);
+        mirrorEquipBoardAt(0, -138.5, Math.PI);
       }
     } catch(e) {}
 

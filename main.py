@@ -4,7 +4,7 @@ FPS Arena — backend.
 Three modes:
   • bots          — single-player (no server-side state).
   • pvp (1v1)     — two players, single opponent (legacy).
-  • team (5v5)    — up to 10 players, split into two teams of up to 5.
+  • team (10v10)  — up to 20 players, split into two teams of up to 10.
 
 Networking: WebSockets only, JSON messages. State is in-memory and ephemeral.
 """
@@ -29,7 +29,7 @@ os.makedirs(SOUNDS_DIR, exist_ok=True)
 app.mount("/sounds", StaticFiles(directory=SOUNDS_DIR), name="sounds")
 
 ROOM_TTL = 3600                # 1 hour max room lifetime
-TEAM_MAX = 5                   # max players per team
+TEAM_MAX = 10                  # max players per team
 TEAM_RESPAWN_SECS = int(os.environ.get("TEAM_RESPAWN_SECS", "5"))
 MATCH_KILL_LIMIT  = int(os.environ.get("MATCH_KILL_LIMIT", "50"))
 MATCH_TIME_LIMIT = int(os.environ.get("MATCH_TIME_LIMIT", "600"))
@@ -348,6 +348,25 @@ async def root():
 @app.get("/game")
 async def game_page():
     return FileResponse(os.path.join(BASE_DIR, "game.html"))
+
+
+@app.post("/__test_reset")
+async def _test_reset():
+    """Test-only: wipe all in-memory lobby/room state so an automated test
+    suite starts each case from a clean slate. Disabled unless the
+    ENABLE_TEST_RESET env flag is set, so it is inert in production."""
+    if os.environ.get("ENABLE_TEST_RESET") != "1":
+        return {"ok": False, "disabled": True}
+    global current_team_lobby_id
+    lobby.clear()
+    rooms.clear()
+    player_rooms.clear()
+    team_lobbies.clear()
+    team_rooms.clear()
+    team_lobby_players.clear()
+    team_player_rooms.clear()
+    current_team_lobby_id = None
+    return {"ok": True}
 
 
 @app.websocket("/ws")

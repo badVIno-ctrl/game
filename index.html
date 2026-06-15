@@ -146,7 +146,7 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
   <div class="card team" onclick="openTeamLobby()">
     <div class="card-icon">🛡️</div>
     <h2>ИГРА КОМАНДАМИ</h2>
-    <p>До 5 на 5. Автораспределение по командам. Расширенная карта с укрытиями.</p>
+    <p>До 10 на 10. Автораспределение по командам. Расширенная карта с укрытиями.</p>
   </div>
 </div>
 
@@ -191,7 +191,7 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:6px;text-transf
     <button class="btn-team" id="tbtn-join" onclick="doTeamJoin()">ВОЙТИ В ЛОББИ</button>
     <p style="font-size:12px;color:#778;line-height:1.5;margin-top:4px">
       Тебя автоматически закинут в команду с меньшим числом игроков.<br>
-      Максимум 5 на 5. Игра не начнётся, если в одной команде 0 человек.
+      Максимум 10 на 10. Игра не начнётся, если в одной команде 0 человек.
     </p>
   </div>
 
@@ -383,8 +383,8 @@ function renderTeamLobby(snap) {
   };
   renderInto(ulA, snap.teamA || []);
   renderInto(ulB, snap.teamB || []);
-  document.getElementById('t-countA').textContent = (snap.teamA || []).length + ' / ' + (snap.max_per_team || 5);
-  document.getElementById('t-countB').textContent = (snap.teamB || []).length + ' / ' + (snap.max_per_team || 5);
+  document.getElementById('t-countA').textContent = (snap.teamA || []).length + ' / ' + (snap.max_per_team || 10);
+  document.getElementById('t-countB').textContent = (snap.teamB || []).length + ' / ' + (snap.max_per_team || 10);
   const canStart = !!snap.can_start;
   const btn = document.getElementById('t-startBtn');
   btn.disabled = !canStart;

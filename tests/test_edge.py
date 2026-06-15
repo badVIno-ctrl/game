@@ -2,8 +2,22 @@
 """Edge case tests."""
 
 import asyncio, json, sys, websockets
+import urllib.request
 
 URL = "ws://localhost:8000/ws"
+RESET_URL = "http://localhost:8000/__test_reset"
+
+
+def reset_server():
+    """Wipe server-side state so each edge test starts clean (test-only
+    endpoint, gated by ENABLE_TEST_RESET on the server)."""
+    try:
+        req = urllib.request.Request(RESET_URL, method="POST", data=b"")
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+
+
 PASS, FAIL = [], []
 
 def check(name, cond, extra=""):
@@ -22,6 +36,18 @@ async def drain(ws, timeout=0.3):
         out.append(m)
 
 
+async def recv_type(ws, mtype, timeout=1.5, tries=6):
+    """Wait for a message of a specific type, skipping unrelated broadcasts
+    (e.g. team_lobby_state) that may arrive first."""
+    for _ in range(tries):
+        m = await recv(ws, timeout=timeout)
+        if m is None:
+            return None
+        if m.get("type") == mtype:
+            return m
+    return None
+
+
 # ---- Late-join: existing players see the new player in team_room_state
 async def test_late_join_broadcast():
     print("\n[E1] Late join broadcasts roster to existing players")
@@ -32,7 +58,7 @@ async def test_late_join_broadcast():
         await b.send(json.dumps({"type": "team_join", "nickname": "lj2"}))
         await drain(b); await drain(a)
         await a.send(json.dumps({"type": "team_start"}))
-        m_a = await recv(a); m_b = await recv(b)
+        m_a = await recv_type(a, "team_match_start"); m_b = await recv_type(b, "team_match_start")
         room = m_a["room"]
         await a.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "lj1"}))
         await b.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "lj2"}))
@@ -40,7 +66,7 @@ async def test_late_join_broadcast():
 
         # c late-joins
         await c.send(json.dumps({"type": "team_join", "nickname": "lj3"}))
-        m_c = await recv(c)
+        m_c = await recv_type(c, "team_match_start")
         check("lj3 gets team_match_start (late)", m_c and m_c.get("type") == "team_match_start" and m_c.get("late_join"))
         # Existing players should get a team_room_state broadcast
         msgs_a = await drain(a, timeout=0.5)
@@ -52,7 +78,7 @@ async def test_late_join_broadcast():
 
         # lj3 connects via game-page WS and gets team_game_start
         await c.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "lj3"}))
-        m = await recv(c)
+        m = await recv_type(c, "team_game_start")
         check("lj3 game_start after join_room", m and m.get("type") == "team_game_start")
         if m:
             nicks = [e["nick"] for e in m.get("roster", [])]
@@ -61,9 +87,9 @@ async def test_late_join_broadcast():
         await a.close(); await b.close(); await c.close()
 
 
-# ---- Fill 10-slot room: 11th player should NOT late-join (full)
+# ---- Fill 20-slot room: 21st player should NOT late-join (full)
 async def test_room_full():
-    print("\n[E2] Room full at 10 players → 11th can't late-join")
+    print("\n[E2] Room full at 20 players → 21st can't late-join")
     conns = []
     try:
         # Two start players
@@ -72,16 +98,16 @@ async def test_room_full():
         await a.send(json.dumps({"type": "team_join", "nickname": "f1"})); await drain(a)
         await b.send(json.dumps({"type": "team_join", "nickname": "f2"})); await drain(b); await drain(a)
         await a.send(json.dumps({"type": "team_start"}))
-        m_a = await recv(a); m_b = await recv(b)
+        m_a = await recv_type(a, "team_match_start"); m_b = await recv_type(b, "team_match_start")
         room = m_a["room"]
         await a.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "f1"}))
         await b.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "f2"}))
         await drain(a); await drain(b)
-        # Now late-join 8 more
-        for i in range(8):
+        # Now late-join 18 more to fill the room to 20 total
+        for i in range(18):
             c = await websockets.connect(URL); conns.append(c)
             await c.send(json.dumps({"type": "team_join", "nickname": f"f{i+3}"}))
-            m = await recv(c)
+            m = await recv_type(c, "team_match_start")
             check(f"f{i+3} late-joins active room",
                   m and m.get("type") == "team_match_start" and m.get("late_join"),
                   extra=str(m))
@@ -89,12 +115,12 @@ async def test_room_full():
             await c.send(json.dumps({"type": "team_join_room", "room": room, "nickname": f"f{i+3}"}))
             await drain(c)
             await drain(a); await drain(b)
-        # 11th attempts join
-        c11 = await websockets.connect(URL); conns.append(c11)
-        await c11.send(json.dumps({"type": "team_join", "nickname": "f11"}))
-        m = await recv(c11)
-        # Should fall through to NEW lobby since room is full
-        check("11th joiner falls back to a fresh lobby",
+        # 21st attempts join
+        c21 = await websockets.connect(URL); conns.append(c21)
+        await c21.send(json.dumps({"type": "team_join", "nickname": "f21"}))
+        m = await recv(c21)
+        # Should fall through to NEW lobby since room is full (20/20)
+        check("21st joiner falls back to a fresh lobby",
               m and m.get("type") == "team_joined", extra=str(m))
     finally:
         for c in conns: await c.close()
@@ -108,7 +134,7 @@ async def test_player_leave():
         await a.send(json.dumps({"type": "team_join", "nickname": "L1"})); await drain(a)
         await b.send(json.dumps({"type": "team_join", "nickname": "L2"})); await drain(b); await drain(a)
         await a.send(json.dumps({"type": "team_start"}))
-        m_a = await recv(a); m_b = await recv(b)
+        m_a = await recv_type(a, "team_match_start"); m_b = await recv_type(b, "team_match_start")
         room = m_a["room"]
         await a.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "L1"}))
         await b.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "L2"}))
@@ -117,9 +143,13 @@ async def test_player_leave():
         await b.close()
         await asyncio.sleep(0.3)
         msgs = await drain(a, timeout=0.5)
-        left = next((m for m in msgs if m.get("type") == "team_player_left"), None)
-        check("L1 notified of L2 leaving", left and left.get("nick") == "L2",
-              extra=str(left))
+        # Reconnect-friendly design: an abrupt disconnect first emits
+        # team_player_disconnected (slot held for RECONNECT_TTL). A definitive
+        # team_player_left only fires after the TTL. Either counts as "notified".
+        left = next((m for m in msgs
+                     if m.get("type") in ("team_player_disconnected", "team_player_left")
+                     and m.get("nick") == "L2"), None)
+        check("L1 notified of L2 leaving", left is not None, extra=str(left))
     finally:
         await a.close()
         try: await b.close()
@@ -134,7 +164,7 @@ async def test_rejoin():
         await a.send(json.dumps({"type": "team_join", "nickname": "rj1"})); await drain(a)
         await b.send(json.dumps({"type": "team_join", "nickname": "rj2"})); await drain(b); await drain(a)
         await a.send(json.dumps({"type": "team_start"}))
-        m_a = await recv(a); m_b = await recv(b)
+        m_a = await recv_type(a, "team_match_start"); m_b = await recv_type(b, "team_match_start")
         room = m_a["room"]
         await a.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "rj1"}))
         await b.send(json.dumps({"type": "team_join_room", "room": room, "nickname": "rj2"}))
@@ -179,6 +209,7 @@ async def main():
     tests = [test_late_join_broadcast, test_room_full,
              test_player_leave, test_rejoin, test_concurrent_start]
     for t in tests:
+        reset_server()
         try: await t()
         except Exception as e:
             FAIL.append(f"{t.__name__} CRASHED")
